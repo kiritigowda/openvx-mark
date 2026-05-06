@@ -14,7 +14,8 @@
 
 static void printUsage(const char* prog) {
     printf("Usage: %s [OPTIONS]\n\n", prog);
-    printf("openvx-mark — OpenVX Benchmark Suite\n\n");
+    printf("openvx-mark v%s (%s) — OpenVX Benchmark Suite\n\n",
+           OPENVX_MARK_VERSION, GIT_COMMIT_SHA);
 
     printf("Benchmark Selection:\n");
     printf("  --all                         Run all benchmarks (default)\n");
@@ -186,7 +187,8 @@ int main(int argc, char* argv[]) {
     }
 
     printf("=============================================================\n");
-    printf("  openvx-mark — OpenVX Benchmark Suite\n");
+    printf("  openvx-mark v%s (%s) — OpenVX Benchmark Suite\n",
+           OPENVX_MARK_VERSION, GIT_COMMIT_SHA);
     printf("=============================================================\n\n");
 
     // Create OpenVX context
@@ -231,6 +233,8 @@ int main(int argc, char* argv[]) {
     sys_info.vx_version = context.version();
     sys_info.vx_num_kernels = context.numKernels();
     sys_info.vx_extensions = context.extensions();
+    sys_info.benchmark_version = OPENVX_MARK_VERSION;
+    sys_info.benchmark_git_commit = GIT_COMMIT_SHA;
     printf("  Host: %s (%s %s)\n", sys_info.hostname.c_str(),
            sys_info.os_name.c_str(), sys_info.os_version.c_str());
     printf("  CPU:  %s (%d cores)\n\n", sys_info.cpu_model.c_str(), sys_info.cpu_cores);
