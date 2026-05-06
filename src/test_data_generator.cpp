@@ -89,6 +89,7 @@ void TestDataGenerator::fillImageRandom(vx_image image, uint32_t width, uint32_t
     }
 }
 
+#if OPENVX_HAS_1_2
 vx_tensor TestDataGenerator::createFilledTensor(vx_context ctx, const vx_size* dims,
                                                 vx_size num_dims, vx_enum data_type) {
     vx_tensor tensor = vxCreateTensor(ctx, num_dims, dims, data_type, 0);
@@ -123,6 +124,7 @@ vx_tensor TestDataGenerator::createFilledTensor(vx_context ctx, const vx_size* d
                       data.data(), VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
     return tensor;
 }
+#endif
 
 vx_threshold TestDataGenerator::createBinaryThreshold(vx_context ctx, vx_int32 value) {
     vx_threshold thresh = vxCreateThresholdForImage(ctx, VX_THRESHOLD_TYPE_BINARY,

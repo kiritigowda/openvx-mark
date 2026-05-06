@@ -2,7 +2,7 @@
 
 # openvx-mark
 
-**openvx-mark** is a vendor-agnostic benchmark suite for [OpenVX 1.3.1](https://www.khronos.org/openvx/) implementations. It measures the performance of individual vision kernels, multi-node pipelines, and immediate-mode operations across configurable resolutions, producing composite scores, conformance reports, and detailed analytics.
+**openvx-mark** is a vendor-agnostic benchmark suite for [OpenVX](https://www.khronos.org/openvx/) implementations (1.0 through 1.3+). It measures the performance of individual vision kernels, multi-node pipelines, and immediate-mode operations across configurable resolutions, producing composite scores, conformance reports, and detailed analytics.
 
 openvx-mark works with any conformant OpenVX implementation — AMD OpenVX (MIVisionX), Intel OpenVX, Khronos Sample Implementation, or any other vendor's runtime.
 

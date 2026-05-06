@@ -1,7 +1,7 @@
 #ifndef TEST_DATA_GENERATOR_H
 #define TEST_DATA_GENERATOR_H
 
-#include <VX/vx.h>
+#include "openvx_version.h"
 #include <cstdint>
 #include <random>
 
@@ -13,9 +13,11 @@ public:
     vx_image createFilledImage(vx_context ctx, uint32_t width, uint32_t height, vx_df_image format);
     void fillImageRandom(vx_image image, uint32_t width, uint32_t height, vx_df_image format);
 
-    // Tensor creation + fill
+    // Tensor creation + fill (OpenVX 1.2+)
+#if OPENVX_HAS_1_2
     vx_tensor createFilledTensor(vx_context ctx, const vx_size* dims, vx_size num_dims,
                                  vx_enum data_type);
+#endif
 
     // Auxiliary objects
     vx_threshold createBinaryThreshold(vx_context ctx, vx_int32 value);

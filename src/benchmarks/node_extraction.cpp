@@ -25,12 +25,13 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "benchmark_runner.h"
-#include <VX/vx.h>
+#include "openvx_version.h"
 #include <vector>
 
 std::vector<BenchmarkCase> registerExtractionBenchmarks() {
     std::vector<BenchmarkCase> cases;
 
+#if OPENVX_HAS_1_2
     // MatchTemplate: compare an image against a 32x32 template using CCORR_NORM
     {
         BenchmarkCase bc;
@@ -162,6 +163,7 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
         bc.immediate_func = nullptr;
         cases.push_back(bc);
     }
+#endif
 
     return cases;
 }

@@ -25,7 +25,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "benchmark_runner.h"
-#include <VX/vx.h>
+#include "openvx_version.h"
 #include <VX/vx_nodes.h>
 #include <vector>
 
@@ -250,6 +250,7 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
         cases.push_back(bc);
     }
 
+#if OPENVX_HAS_1_1
     // NonLinearFilter — U8 input, U8 output, median mode with mask
     {
         BenchmarkCase bc;
@@ -284,6 +285,7 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
         bc.immediate_func = nullptr;
         cases.push_back(bc);
     }
+#endif
 
     return cases;
 }

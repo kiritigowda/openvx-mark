@@ -14,7 +14,7 @@
 
 static void printUsage(const char* prog) {
     printf("Usage: %s [OPTIONS]\n\n", prog);
-    printf("openvx-mark — OpenVX 1.3.1 Benchmark Suite\n\n");
+    printf("openvx-mark — OpenVX Benchmark Suite\n\n");
 
     printf("Benchmark Selection:\n");
     printf("  --all                         Run all benchmarks (default)\n");
@@ -186,7 +186,7 @@ int main(int argc, char* argv[]) {
     }
 
     printf("=============================================================\n");
-    printf("  openvx-mark — OpenVX 1.3.1 Benchmark Suite\n");
+    printf("  openvx-mark — OpenVX Benchmark Suite\n");
     printf("=============================================================\n\n");
 
     // Create OpenVX context

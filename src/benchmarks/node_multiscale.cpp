@@ -26,7 +26,7 @@
 
 #include "benchmark_runner.h"
 #include "benchmark_config.h"
-#include <VX/vx.h>
+#include "openvx_version.h"
 #include <VX/vx_nodes.h>
 #include <vector>
 
@@ -65,6 +65,7 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
         cases.push_back(bc);
     }
 
+#if OPENVX_HAS_1_1
     // LaplacianPyramid — U8 input, Laplacian pyramid + S16 remainder output
     {
         BenchmarkCase bc;
@@ -104,6 +105,7 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
         bc.immediate_func = nullptr;
         cases.push_back(bc);
     }
+#endif
 
     // HalfScaleGaussian — U8 input, U8 output at half resolution, kernel_size=3
     {
