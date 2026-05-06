@@ -73,3 +73,45 @@ jobs:
           name: benchmark-results-${{ matrix.name }}
           path: build/benchmark_results/
           if-no-files-found: ignore
+
+  compare:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: always() && !cancelled()
+
+    steps:
+      - name: Checkout openvx-mark
+        uses: actions/checkout@v4
+
+      - name: Download all benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Compare benchmark results
+        run: |
+          KHRONOS=artifacts/benchmark-results-khronos-sample/benchmark_results.json
+          MIVISIONX=artifacts/benchmark-results-mivisionx-cpu/benchmark_results.json
+
+          if [ ! -f "$KHRONOS" ] || [ ! -f "$MIVISIONX" ]; then
+            echo "Skipping comparison — one or both benchmark results missing"
+            exit 0
+          fi
+
+          python3 scripts/compare_reports.py "$MIVISIONX" "$KHRONOS" \
+            --output artifacts/comparison
+
+      - name: Post comparison to job summary
+        if: always()
+        run: |
+          if [ -f artifacts/comparison.md ]; then
+            cat artifacts/comparison.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload comparison report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-comparison
+          path: artifacts/comparison.*
+          if-no-files-found: ignore
