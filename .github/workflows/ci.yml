@@ -34,7 +34,7 @@ jobs:
       - name: Build openvx-mark
         run: |
           mkdir build && cd build
-          cmake -DOPENVX_INCLUDES=/tmp/openvx-sample/include \
+          cmake -DOPENVX_INCLUDES=/tmp/openvx-sample/api-docs/include \
                 -DOPENVX_LIB_DIR=${{ steps.openvx.outputs.lib_dir }} ..
           cmake --build . -j$(nproc)
 
