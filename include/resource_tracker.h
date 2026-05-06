@@ -1,7 +1,7 @@
 #ifndef RESOURCE_TRACKER_H
 #define RESOURCE_TRACKER_H
 
-#include <VX/vx.h>
+#include "openvx_version.h"
 #include <functional>
 #include <vector>
 
@@ -76,10 +76,12 @@ public:
         return a;
     }
 
+#if OPENVX_HAS_1_2
     vx_tensor trackTensor(vx_tensor t) {
         release_fns_.push_back([t]() mutable { vxReleaseTensor(&t); });
         return t;
     }
+#endif
 
     void releaseAll() {
         for (auto it = release_fns_.rbegin(); it != release_fns_.rend(); ++it) {

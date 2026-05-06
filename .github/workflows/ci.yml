@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout openvx-mark
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Build Khronos OpenVX sample implementation
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/OpenVX-sample-impl.git /tmp/openvx-sample
+          cd /tmp/openvx-sample
+          python Build.py --os=Linux --arch=64 --conf=Release
+
+      - name: Build openvx-mark
+        run: |
+          mkdir build && cd build
+          cmake -DOPENVX_INCLUDES=/tmp/openvx-sample/include \
+                -DOPENVX_LIB_DIR=/tmp/openvx-sample/install/Linux/x64/Release/bin ..
+          cmake --build . -j$(nproc)
+
+      - name: Run openvx-mark
+        run: |
+          cd build
+          export LD_LIBRARY_PATH=/tmp/openvx-sample/install/Linux/x64/Release/bin:$LD_LIBRARY_PATH
+          ./openvx-mark --resolution VGA --iterations 10 --warmup 3

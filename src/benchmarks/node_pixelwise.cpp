@@ -25,7 +25,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "benchmark_runner.h"
-#include <VX/vx.h>
+#include "openvx_version.h"
 #include <VX/vx_nodes.h>
 #include <vector>
 
@@ -221,6 +221,7 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
         cases.push_back(bc);
     }
 
+#if OPENVX_HAS_1_3
     // ---- Min ----
     {
         BenchmarkCase bc;
@@ -278,7 +279,9 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
         bc.immediate_func = nullptr;
         cases.push_back(bc);
     }
+#endif
 
+#if OPENVX_HAS_1_2
     // ---- Copy ----
     {
         BenchmarkCase bc;
@@ -300,6 +303,7 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
         bc.immediate_func = nullptr;
         cases.push_back(bc);
     }
+#endif
 
     return cases;
 }

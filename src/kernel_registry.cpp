@@ -1,5 +1,5 @@
 #include "kernel_registry.h"
-#include <VX/vx.h>
+#include "openvx_version.h"
 
 void KernelRegistry::registerKernel(vx_enum e, const std::string& name,
                                     const std::string& display, const std::string& cat,
@@ -18,9 +18,13 @@ void KernelRegistry::initCatalog() {
     registerKernel(VX_KERNEL_SUBTRACT, "Subtract", "Subtraction", "pixelwise", "vision");
     registerKernel(VX_KERNEL_MULTIPLY, "Multiply", "Pixelwise Multiply", "pixelwise", "vision");
     // Pixel-wise — Enhanced Vision feature set
+#if OPENVX_HAS_1_3
     registerKernel(VX_KERNEL_MIN, "Min", "Pixel-wise Minimum", "pixelwise", "enhanced_vision");
     registerKernel(VX_KERNEL_MAX, "Max", "Pixel-wise Maximum", "pixelwise", "enhanced_vision");
+#endif
+#if OPENVX_HAS_1_2
     registerKernel(VX_KERNEL_COPY, "Copy", "Data Object Copy", "pixelwise", "enhanced_vision");
+#endif
 
     // Filters — Vision feature set
     registerKernel(VX_KERNEL_BOX_3x3, "Box3x3", "Box Filter 3x3", "filters", "vision");
@@ -30,7 +34,9 @@ void KernelRegistry::initCatalog() {
     registerKernel(VX_KERNEL_DILATE_3x3, "Dilate3x3", "Dilate 3x3", "filters", "vision");
     registerKernel(VX_KERNEL_SOBEL_3x3, "Sobel3x3", "Sobel 3x3", "filters", "vision");
     registerKernel(VX_KERNEL_CUSTOM_CONVOLUTION, "CustomConvolution", "Custom Convolution", "filters", "vision");
+#if OPENVX_HAS_1_1
     registerKernel(VX_KERNEL_NON_LINEAR_FILTER, "NonLinearFilter", "Non-linear Filter", "filters", "vision");
+#endif
 
     // Color — Vision feature set
     registerKernel(VX_KERNEL_COLOR_CONVERT, "ColorConvert", "Color Space Conversion", "color", "vision");
@@ -53,7 +59,9 @@ void KernelRegistry::initCatalog() {
 
     // Multi-scale — Vision feature set
     registerKernel(VX_KERNEL_GAUSSIAN_PYRAMID, "GaussianPyramid", "Gaussian Pyramid", "multiscale", "vision");
+#if OPENVX_HAS_1_1
     registerKernel(VX_KERNEL_LAPLACIAN_PYRAMID, "LaplacianPyramid", "Laplacian Pyramid", "multiscale", "vision");
+#endif
     registerKernel(VX_KERNEL_HALFSCALE_GAUSSIAN, "HalfScaleGaussian", "Half-Scale Gaussian", "multiscale", "vision");
 
     // Feature detection — Vision feature set
@@ -62,7 +70,8 @@ void KernelRegistry::initCatalog() {
     registerKernel(VX_KERNEL_FAST_CORNERS, "FastCorners", "FAST Corners", "feature", "vision");
     registerKernel(VX_KERNEL_OPTICAL_FLOW_PYR_LK, "OpticalFlowPyrLK", "Optical Flow Pyramid LK", "feature", "vision");
 
-    // Feature extraction — Enhanced Vision feature set
+    // Feature extraction — Enhanced Vision feature set (OpenVX 1.2+)
+#if OPENVX_HAS_1_2
     registerKernel(VX_KERNEL_MATCH_TEMPLATE, "MatchTemplate", "Match Template", "extraction", "enhanced_vision");
     registerKernel(VX_KERNEL_LBP, "LBP", "Local Binary Pattern", "extraction", "enhanced_vision");
     registerKernel(VX_KERNEL_HOG_CELLS, "HOGCells", "HOG Cells", "extraction", "enhanced_vision");
@@ -70,7 +79,7 @@ void KernelRegistry::initCatalog() {
     registerKernel(VX_KERNEL_HOUGH_LINES_P, "HoughLinesP", "Hough Lines Probability", "extraction", "enhanced_vision");
     registerKernel(VX_KERNEL_NON_MAX_SUPPRESSION, "NonMaxSuppression", "Non-Max Suppression", "extraction", "enhanced_vision");
 
-    // Tensor — Enhanced Vision feature set
+    // Tensor — Enhanced Vision feature set (OpenVX 1.2+)
     registerKernel(VX_KERNEL_TENSOR_ADD, "TensorAdd", "Tensor Add", "tensor", "enhanced_vision");
     registerKernel(VX_KERNEL_TENSOR_SUBTRACT, "TensorSub", "Tensor Subtract", "tensor", "enhanced_vision");
     registerKernel(VX_KERNEL_TENSOR_MULTIPLY, "TensorMul", "Tensor Multiply", "tensor", "enhanced_vision");
@@ -78,17 +87,22 @@ void KernelRegistry::initCatalog() {
     registerKernel(VX_KERNEL_TENSOR_CONVERT_DEPTH, "TensorConvertDepth", "Tensor Convert Depth", "tensor", "enhanced_vision");
     registerKernel(VX_KERNEL_TENSOR_MATRIX_MULTIPLY, "TensorMatMul", "Tensor Matrix Multiply", "tensor", "enhanced_vision");
     registerKernel(VX_KERNEL_TENSOR_TABLE_LOOKUP, "TensorTableLookup", "Tensor Table Lookup", "tensor", "enhanced_vision");
+#endif
 
     // Misc — Vision feature set
     registerKernel(VX_KERNEL_MAGNITUDE, "Magnitude", "Magnitude", "misc", "vision");
     registerKernel(VX_KERNEL_PHASE, "Phase", "Phase", "misc", "vision");
     registerKernel(VX_KERNEL_TABLE_LOOKUP, "TableLookup", "Table Lookup", "misc", "vision");
     registerKernel(VX_KERNEL_THRESHOLD, "Threshold", "Threshold", "misc", "vision");
+#if OPENVX_HAS_1_3
     registerKernel(VX_KERNEL_WEIGHTED_AVERAGE, "WeightedAverage", "Weighted Average", "misc", "vision");
-    // Misc — Enhanced Vision feature set
+#endif
+    // Misc — Enhanced Vision feature set (OpenVX 1.2+)
+#if OPENVX_HAS_1_2
     registerKernel(VX_KERNEL_BILATERAL_FILTER, "BilateralFilter", "Bilateral Filter", "misc", "enhanced_vision");
     registerKernel(VX_KERNEL_SELECT, "Select", "Select", "misc", "enhanced_vision");
     registerKernel(VX_KERNEL_SCALAR_OPERATION, "ScalarOperation", "Scalar Operation", "misc", "enhanced_vision");
+#endif
 }
 
 void KernelRegistry::probe(vx_context context) {
