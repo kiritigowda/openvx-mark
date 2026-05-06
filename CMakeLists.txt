@@ -42,7 +42,20 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND EXISTS "${ROCM_PATH}/lib/llvm/bin/amdclang
     set(CMAKE_CXX_COMPILER ${ROCM_PATH}/lib/llvm/bin/amdclang++)
 endif()
 
-project(openvx-mark)
+project(openvx-mark VERSION 1.0.0)
+
+# Git commit SHA for version tracking
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_COMMIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE GIT_RESULT
+)
+if(NOT GIT_RESULT EQUAL 0)
+    set(GIT_COMMIT_SHA "unknown")
+endif()
 
 # Add custom find module path
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -104,5 +117,9 @@ add_executable(openvx-mark ${BENCHMARK_SOURCES})
 target_include_directories(openvx-mark PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${OpenVX_INCLUDE_DIR}
+)
+target_compile_definitions(openvx-mark PRIVATE
+    OPENVX_MARK_VERSION="${PROJECT_VERSION}"
+    GIT_COMMIT_SHA="${GIT_COMMIT_SHA}"
 )
 target_link_libraries(openvx-mark ${OpenVX_LIBRARIES})

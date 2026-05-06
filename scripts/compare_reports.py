@@ -57,14 +57,21 @@ def build_result_map(report):
     return result_map
 
 
+def get_system_info(report):
+    """Extract system info dict from a report."""
+    return report.get('system', {})
+
+
 def compare(reports, paths):
     impl_names = []
     result_maps = []
+    system_infos = []
 
     for i, report in enumerate(reports):
         name = report.get('openvx', {}).get('implementation', os.path.basename(paths[i]))
         impl_names.append(name)
         result_maps.append(build_result_map(report))
+        system_infos.append(get_system_info(report))
 
     # Collect all unique benchmark keys
     all_keys = set()
@@ -73,20 +80,64 @@ def compare(reports, paths):
 
     all_keys = sorted(all_keys)
 
-    return impl_names, result_maps, all_keys
+    return impl_names, result_maps, all_keys, system_infos
 
 
-def write_markdown(impl_names, result_maps, all_keys, output_path):
+def format_ram(ram_value):
+    """Format RAM value from report (may be gb float or bytes int)."""
+    if isinstance(ram_value, (int,)) and ram_value > 1e9:
+        return f'{ram_value / (1024**3):.1f} GB'
+    return f'{ram_value} GB'
+
+
+def write_markdown(impl_names, result_maps, all_keys, output_path, system_infos=None):
     with open(output_path + '.md', 'w') as f:
         f.write('# OpenVX Benchmark Comparison\n\n')
 
-        # System info table
+        # Hardware / system info section
+        if system_infos and len(system_infos) >= 2:
+            hw_match = (system_infos[0].get('cpu_model') == system_infos[1].get('cpu_model')
+                        and system_infos[0].get('cpu_cores') == system_infos[1].get('cpu_cores'))
+
+            f.write('## System Info\n\n')
+            if hw_match:
+                si = system_infos[0]
+                f.write(f'| Property | Value |\n')
+                f.write(f'|:---|:---|\n')
+                f.write(f'| CPU | {si.get("cpu_model", "N/A")} |\n')
+                f.write(f'| Cores | {si.get("cpu_cores", "N/A")} |\n')
+                f.write(f'| RAM | {format_ram(si.get("ram_gb", si.get("ram_bytes", "N/A")))} |\n')
+                f.write(f'| OS | {si.get("os_name", "N/A")} {si.get("os_version", "")} |\n')
+                f.write(f'\n> **Same hardware** — both benchmarks ran on identical hardware.\n\n')
+            else:
+                f.write(f'| Property |')
+                for name in impl_names:
+                    f.write(f' {name} |')
+                f.write('\n|:---|')
+                for _ in impl_names:
+                    f.write(':---|')
+                f.write('\n')
+                for prop, key in [('CPU', 'cpu_model'), ('Cores', 'cpu_cores'),
+                                  ('OS', 'os_name')]:
+                    f.write(f'| {prop} |')
+                    for si in system_infos:
+                        f.write(f' {si.get(key, "N/A")} |')
+                    f.write('\n')
+                f.write(f'\n> **Warning:** Benchmarks ran on different hardware — results may not be directly comparable.\n\n')
+
+        # Implementation table
         f.write('## Implementations\n\n')
         f.write('| # | Implementation |\n')
         f.write('|---|---|\n')
         for i, name in enumerate(impl_names):
             f.write(f'| {i+1} | {name} |\n')
         f.write('\n')
+
+        # Speedup label: first impl vs second
+        if len(impl_names) >= 2:
+            speedup_label = f'Speedup ({impl_names[0]} vs {impl_names[1]})'
+        else:
+            speedup_label = 'Speedup'
 
         # Results table
         header = '| Benchmark | Mode | Resolution |'
@@ -96,10 +147,11 @@ def write_markdown(impl_names, result_maps, all_keys, output_path):
             header += f' {short} (ms) | {short} (MP/s) |'
             separator += '---:|---:|'
 
-        header += ' Speedup |'
+        header += f' Speedup |'
         separator += '---:|'
 
         f.write('## Results\n\n')
+        f.write(f'> Speedup = how much faster **{impl_names[0]}** is compared to **{impl_names[1]}** (higher is better)\n\n')
         f.write(header + '\n')
         f.write(separator + '\n')
 
@@ -120,9 +172,9 @@ def write_markdown(impl_names, result_maps, all_keys, output_path):
                     row += ' N/A | N/A |'
                     medians.append(None)
 
-            # Speedup (first vs second, if both available)
-            if len(medians) >= 2 and medians[0] and medians[1] and medians[1] > 0:
-                speedup = medians[0] / medians[1]
+            # Speedup: baseline (second) / candidate (first) — how much faster first is
+            if len(medians) >= 2 and medians[0] and medians[1] and medians[0] > 0:
+                speedup = medians[1] / medians[0]
                 row += f' {speedup:.2f}x |'
             else:
                 row += ' N/A |'
@@ -157,8 +209,8 @@ def write_csv(impl_names, result_maps, all_keys, output_path):
                     row += ',,'
                     medians.append(None)
 
-            if len(medians) >= 2 and medians[0] and medians[1] and medians[1] > 0:
-                row += f',{medians[0]/medians[1]:.4f}'
+            if len(medians) >= 2 and medians[0] and medians[1] and medians[0] > 0:
+                row += f',{medians[1]/medians[0]:.4f}'
             else:
                 row += ','
 
@@ -184,9 +236,9 @@ def main():
             sys.exit(1)
         reports.append(load_report(path))
 
-    impl_names, result_maps, all_keys = compare(reports, args.reports)
+    impl_names, result_maps, all_keys, system_infos = compare(reports, args.reports)
 
-    write_markdown(impl_names, result_maps, all_keys, args.output)
+    write_markdown(impl_names, result_maps, all_keys, args.output, system_infos)
     write_csv(impl_names, result_maps, all_keys, args.output)
 
     print(f'\nCompared {len(args.reports)} implementations across {len(all_keys)} benchmarks')

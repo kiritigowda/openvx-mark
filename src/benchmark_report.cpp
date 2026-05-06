@@ -285,6 +285,12 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
     f << "    \"extensions\": \"" << jsonEscape(sys_info_.vx_extensions) << "\"\n";
     f << "  },\n";
 
+    // Benchmark version
+    f << "  \"benchmark\": {\n";
+    f << "    \"version\": \"" << jsonEscape(sys_info_.benchmark_version) << "\",\n";
+    f << "    \"git_commit\": \"" << jsonEscape(sys_info_.benchmark_git_commit) << "\"\n";
+    f << "  },\n";
+
     // Config
     f << "  \"config\": {\n";
     f << "    \"iterations\": " << config_.iterations << ",\n";
@@ -470,6 +476,12 @@ void BenchmarkReport::writeCSV(const std::vector<BenchmarkResult>& results,
         return;
     }
 
+    // Metadata
+    f << "# openvx-mark v" << sys_info_.benchmark_version
+      << " (" << sys_info_.benchmark_git_commit << ")"
+      << " | " << sys_info_.vx_implementation
+      << " | " << sys_info_.timestamp_iso8601 << "\n";
+
     // Header
     f << "name,category,feature_set,mode,resolution,width,height,supported,verified,"
       << "median_ms,mean_ms,min_ms,max_ms,stddev_ms,p5_ms,p95_ms,p99_ms,"
@@ -550,6 +562,8 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
     f << "| OpenVX Version | " << sys_info_.vx_version << " |\n";
     f << "| Available Kernels | " << registry_.availableCount()
       << " / " << registry_.totalCount() << " |\n";
+    f << "| Benchmark Version | " << sys_info_.benchmark_version << " |\n";
+    f << "| Git Commit | " << sys_info_.benchmark_git_commit << " |\n";
     f << "| Timestamp | " << sys_info_.timestamp_iso8601 << " |\n\n";
 
     // Config

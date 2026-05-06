@@ -19,6 +19,10 @@ struct SystemInfo {
     uint16_t vx_version = 0;
     uint32_t vx_num_kernels = 0;
     std::string vx_extensions;
+
+    // Benchmark version tracking
+    std::string benchmark_version;
+    std::string benchmark_git_commit;
 };
 
 SystemInfo collectSystemInfo();
