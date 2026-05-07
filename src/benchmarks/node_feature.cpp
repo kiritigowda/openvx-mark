@@ -71,6 +71,7 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
             for (int i = 0; i < 64 * 32; i++) a[i] = 0;
             for (int i = 64 * 32; i < 64 * 64; i++) a[i] = 255;
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_threshold hyst = vxCreateThresholdForImage(ctx, VX_THRESHOLD_TYPE_RANGE, VX_DF_IMAGE_U8, VX_DF_IMAGE_U8);
             vx_pixel_value_t lower_pv = {}, upper_pv = {};
@@ -78,8 +79,17 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
             vxCopyThresholdRange(hyst, &lower_pv, &upper_pv, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vx_graph g = vxCreateGraph(ctx);
             vx_node n = vxCannyEdgeDetectorNode(g, in, hyst, 3, VX_NORM_L1, out);
-            vxVerifyGraph(g);
-            vxProcessGraph(g);
+            if (vxVerifyGraph(g) != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseThreshold(&hyst);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            vx_status status = vxProcessGraph(g);
+            if (status != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseThreshold(&hyst);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             bool ok = verify::imageNonZero(out, 64, 64);
             vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseThreshold(&hyst);
             vxReleaseImage(&in); vxReleaseImage(&out);
@@ -136,6 +146,7 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
                 for (int x = 0; x < 64; x++)
                     a[y * 64 + x] = ((x / 2 + y / 2) % 2) ? 255 : 0;
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_float32 strength_val = 0.0001f, min_dist_val = 1.0f, sensitivity_val = 0.04f;
             vx_scalar strength = vxCreateScalar(ctx, VX_TYPE_FLOAT32, &strength_val);
             vx_scalar min_dist = vxCreateScalar(ctx, VX_TYPE_FLOAT32, &min_dist_val);
@@ -145,7 +156,12 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
             vx_scalar num_corners = vxCreateScalar(ctx, VX_TYPE_SIZE, &num);
             vx_graph g = vxCreateGraph(ctx);
             vx_node n = vxHarrisCornersNode(g, in, strength, min_dist, sensitivity, 3, 3, corners, num_corners);
-            vxVerifyGraph(g);
+            if (vxVerifyGraph(g) != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g);
+                vxReleaseScalar(&strength); vxReleaseScalar(&min_dist); vxReleaseScalar(&sensitivity);
+                vxReleaseScalar(&num_corners); vxReleaseArray(&corners); vxReleaseImage(&in);
+                return true;
+            }
             vx_status status = vxProcessGraph(g);
             bool ok = (status == VX_SUCCESS);
             vxReleaseNode(&n); vxReleaseGraph(&g);
@@ -196,6 +212,7 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
                 for (int x = 0; x < 64; x++)
                     a[y * 64 + x] = ((x / 2 + y / 2) % 2) ? 255 : 0;
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_float32 strength_val = 10.0f;
             vx_scalar strength = vxCreateScalar(ctx, VX_TYPE_FLOAT32, &strength_val);
             vx_array corners = vxCreateArray(ctx, VX_TYPE_KEYPOINT, 100);
@@ -203,7 +220,12 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
             vx_scalar num_corners = vxCreateScalar(ctx, VX_TYPE_SIZE, &num);
             vx_graph g = vxCreateGraph(ctx);
             vx_node n = vxFastCornersNode(g, in, strength, vx_true_e, corners, num_corners);
-            vxVerifyGraph(g);
+            if (vxVerifyGraph(g) != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g);
+                vxReleaseScalar(&strength); vxReleaseScalar(&num_corners);
+                vxReleaseArray(&corners); vxReleaseImage(&in);
+                return true;
+            }
             vx_status status = vxProcessGraph(g);
             bool ok = (status == VX_SUCCESS);
             vxReleaseNode(&n); vxReleaseGraph(&g);

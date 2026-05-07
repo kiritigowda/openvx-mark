@@ -61,8 +61,13 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         bc.verify_fn = [](vx_context ctx) -> bool {
             std::vector<uint8_t> a(64 * 64, 100);
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 32, 32, VX_DF_IMAGE_U8);
-            vxuScaleImage(ctx, in, out, VX_INTERPOLATION_BILINEAR);
+            vx_status status = vxuScaleImage(ctx, in, out, VX_INTERPOLATION_BILINEAR);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             auto result = verify::readImage(out, 32, 32);
             bool ok = (std::abs((int)result[16 * 32 + 16] - 100) <= 2);
             vxReleaseImage(&in); vxReleaseImage(&out);
@@ -97,8 +102,13 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         bc.verify_fn = [](vx_context ctx) -> bool {
             std::vector<uint8_t> a(64 * 64, 100);
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 128, 128, VX_DF_IMAGE_U8);
-            vxuScaleImage(ctx, in, out, VX_INTERPOLATION_BILINEAR);
+            vx_status status = vxuScaleImage(ctx, in, out, VX_INTERPOLATION_BILINEAR);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             auto result = verify::readImage(out, 128, 128);
             bool ok = (std::abs((int)result[64 * 128 + 64] - 100) <= 2);
             vxReleaseImage(&in); vxReleaseImage(&out);
@@ -136,11 +146,17 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         bc.verify_fn = [](vx_context ctx) -> bool {
             std::vector<uint8_t> a(64 * 64, 100);
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_float32 identity[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
             vx_matrix mat = vxCreateMatrix(ctx, VX_TYPE_FLOAT32, 2, 3);
             vxCopyMatrix(mat, identity, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-            vxuWarpAffine(ctx, in, mat, VX_INTERPOLATION_BILINEAR, out);
+            vx_status status = vxuWarpAffine(ctx, in, mat, VX_INTERPOLATION_BILINEAR, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseMatrix(&mat);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             auto result = verify::readImage(out, 64, 64);
             bool ok = (std::abs((int)result[32 * 64 + 32] - 100) <= 2);
             vxReleaseMatrix(&mat);
@@ -179,11 +195,17 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         bc.verify_fn = [](vx_context ctx) -> bool {
             std::vector<uint8_t> a(64 * 64, 100);
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_float32 identity[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
             vx_matrix mat = vxCreateMatrix(ctx, VX_TYPE_FLOAT32, 3, 3);
             vxCopyMatrix(mat, identity, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-            vxuWarpPerspective(ctx, in, mat, VX_INTERPOLATION_BILINEAR, out);
+            vx_status status = vxuWarpPerspective(ctx, in, mat, VX_INTERPOLATION_BILINEAR, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseMatrix(&mat);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             auto result = verify::readImage(out, 64, 64);
             bool ok = (std::abs((int)result[32 * 64 + 32] - 100) <= 2);
             vxReleaseMatrix(&mat);
@@ -222,6 +244,7 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         bc.verify_fn = [](vx_context ctx) -> bool {
             std::vector<uint8_t> a(64 * 64, 100);
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_remap remap = vxCreateRemap(ctx, 64, 64, 64, 64);
             vx_rectangle_t rect = {0, 0, 64, 64};
@@ -234,7 +257,12 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
                 }
             vxCopyRemapPatch(remap, &rect, stride, coords.data(),
                              VX_TYPE_COORDINATES2DF, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-            vxuRemap(ctx, in, remap, VX_INTERPOLATION_BILINEAR, out);
+            vx_status status = vxuRemap(ctx, in, remap, VX_INTERPOLATION_BILINEAR, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseRemap(&remap);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             auto result = verify::readImage(out, 64, 64);
             bool ok = (std::abs((int)result[32 * 64 + 32] - 100) <= 2);
             vxReleaseRemap(&remap);

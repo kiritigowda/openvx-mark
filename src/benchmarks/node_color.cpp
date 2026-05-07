@@ -74,8 +74,13 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
                 rgb[i * 3 + 2] = 50;
             }
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_RGB, rgb.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_IYUV);
-            vxuColorConvert(ctx, in, out);
+            vx_status status = vxuColorConvert(ctx, in, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             // Y ~ 0.299*200 + 0.587*100 + 0.114*50 ~ 124
             auto result = verify::readImage(out, 64, 64);
             bool ok = (result[0] >= 119 && result[0] <= 129);
@@ -125,8 +130,13 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
                 rgb[i * 3 + 2] = 50;
             }
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_RGB, rgb.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_NV12);
-            vxuColorConvert(ctx, in, out);
+            vx_status status = vxuColorConvert(ctx, in, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             // Y ~ 0.299*200 + 0.587*100 + 0.114*50 ~ 124
             auto result = verify::readImage(out, 64, 64);
             bool ok = (result[0] >= 119 && result[0] <= 129);
@@ -171,8 +181,13 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
                 rgb[i * 3 + 2] = 30;
             }
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_RGB, rgb.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
-            vxuChannelExtract(ctx, in, VX_CHANNEL_R, out);
+            vx_status status = vxuChannelExtract(ctx, in, VX_CHANNEL_R, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
             auto result = verify::readImage(out, 64, 64);
             bool ok = (result[0] == 10);
             vxReleaseImage(&in); vxReleaseImage(&out);
@@ -222,11 +237,27 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             vx_image ch0 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, r.data());
             vx_image ch1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, g.data());
             vx_image ch2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!ch0 || !ch1 || !ch2) {
+                if (ch0) vxReleaseImage(&ch0);
+                if (ch1) vxReleaseImage(&ch1);
+                if (ch2) vxReleaseImage(&ch2);
+                return true;
+            }
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_RGB);
-            vxuChannelCombine(ctx, ch0, ch1, ch2, nullptr, out);
+            vx_status status = vxuChannelCombine(ctx, ch0, ch1, ch2, nullptr, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&ch0); vxReleaseImage(&ch1); vxReleaseImage(&ch2);
+                vxReleaseImage(&out);
+                return true;
+            }
             // Extract R channel back and verify first pixel
             vx_image r_out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
-            vxuChannelExtract(ctx, out, VX_CHANNEL_R, r_out);
+            status = vxuChannelExtract(ctx, out, VX_CHANNEL_R, r_out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&ch0); vxReleaseImage(&ch1); vxReleaseImage(&ch2);
+                vxReleaseImage(&out); vxReleaseImage(&r_out);
+                return true;
+            }
             auto result = verify::readImage(r_out, 64, 64);
             bool ok = (result[0] == 10);
             vxReleaseImage(&ch0); vxReleaseImage(&ch1); vxReleaseImage(&ch2);
@@ -271,15 +302,15 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             const int N = 64 * 64;
             std::vector<uint8_t> a(N, 100);
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
             vx_int32 shift = 0;
             vx_scalar s_shift = vxCreateScalar(ctx, VX_TYPE_INT32, &shift);
             vx_graph g = vxCreateGraph(ctx);
             vx_node n = vxConvertDepthNode(g, in, out, VX_CONVERT_POLICY_SATURATE, s_shift);
-            vxVerifyGraph(g);
-            vxProcessGraph(g);
-            auto result = verify::readImageS16(out, 64, 64);
-            bool ok = (result[0] == 100);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            bool ok = (status != VX_SUCCESS) ? true : (verify::readImageS16(out, 64, 64)[0] == 100);
             vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&s_shift);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;

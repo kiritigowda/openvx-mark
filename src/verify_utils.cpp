@@ -23,6 +23,9 @@ vx_image createImage(vx_context ctx, uint32_t w, uint32_t h,
                        data + y * row_bytes, row_bytes);
         }
         vxUnmapImagePatch(img, map_id);
+    } else {
+        vxReleaseImage(&img);
+        return nullptr;
     }
     return img;
 }
