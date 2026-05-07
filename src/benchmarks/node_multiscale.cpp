@@ -27,7 +27,10 @@
 #include "benchmark_runner.h"
 #include "benchmark_config.h"
 #include "openvx_version.h"
+#include "verify_utils.h"
+#include <VX/vxu.h>
 #include <VX/vx_nodes.h>
+#include <cmath>
 #include <vector>
 
 std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
@@ -62,6 +65,18 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            uint8_t a[64];
+            for (int i = 0; i < 64; i++) a[i] = 100;
+            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
+            vx_pyramid pyr = vxCreatePyramid(ctx, 4, VX_SCALE_PYRAMID_HALF, 8, 8, VX_DF_IMAGE_U8);
+            vxuGaussianPyramid(ctx, in, pyr);
+            vx_image level0 = vxGetPyramidLevel(pyr, 0);
+            auto result = verify::readImage(level0, 8, 8);
+            bool ok = (result[0] == 100);
+            vxReleaseImage(&level0); vxReleasePyramid(&pyr); vxReleaseImage(&in);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -103,6 +118,19 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            uint8_t a[64];
+            for (int i = 0; i < 64; i++) a[i] = 100;
+            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
+            vx_pyramid lap = vxCreatePyramid(ctx, 3, VX_SCALE_PYRAMID_HALF, 8, 8, VX_DF_IMAGE_S16);
+            vx_image remainder = vxCreateImage(ctx, 1, 1, VX_DF_IMAGE_U8);
+            vxuLaplacianPyramid(ctx, in, lap, remainder);
+            // For uniform input, remainder should be close to 100
+            auto result = verify::readImage(remainder, 1, 1);
+            bool ok = (std::abs((int)result[0] - 100) <= 5);
+            vxReleaseImage(&remainder); vxReleasePyramid(&lap); vxReleaseImage(&in);
+            return ok;
+        };
         cases.push_back(bc);
     }
 #endif
@@ -134,6 +162,21 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            uint8_t a[16];
+            for (int i = 0; i < 16; i++) a[i] = 100;
+            vx_image in = verify::createImage(ctx, 4, 4, VX_DF_IMAGE_U8, a);
+            vx_image out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_U8);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = vxHalfScaleGaussianNode(g, in, out, 3);
+            vxVerifyGraph(g);
+            vxProcessGraph(g);
+            auto result = verify::readImage(out, 2, 2);
+            bool ok = verify::compareU8(result, {100, 100, 100, 100}, 1);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 

@@ -27,6 +27,8 @@
 #include "benchmark_runner.h"
 #include "benchmark_config.h"
 #include "openvx_version.h"
+#include "verify_utils.h"
+#include <VX/vxu.h>
 #include <VX/vx_nodes.h>
 #include <vector>
 
@@ -67,6 +69,33 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            vx_size dims[2] = {4, 4};
+            int16_t a_data[16], b_data[16];
+            for (int i = 0; i < 16; i++) { a_data[i] = 10; b_data[i] = 20; }
+            vx_tensor t1 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_tensor t2 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 4 * sizeof(int16_t)};
+            vxCopyTensorPatch(t1, 2, starts, dims, strides, a_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t2, 2, starts, dims, strides, b_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_enum policy_val = VX_CONVERT_POLICY_SATURATE;
+            vx_scalar policy = vxCreateScalar(ctx, VX_TYPE_ENUM, &policy_val);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_TENSOR_ADD);
+            vx_node n = vxCreateGenericNode(g, k);
+            vxSetParameterByIndex(n, 0, (vx_reference)t1);
+            vxSetParameterByIndex(n, 1, (vx_reference)t2);
+            vxSetParameterByIndex(n, 2, (vx_reference)policy);
+            vxSetParameterByIndex(n, 3, (vx_reference)tout);
+            vxVerifyGraph(g); vxProcessGraph(g);
+            int16_t result[16] = {};
+            vxCopyTensorPatch(tout, 2, starts, dims, strides, result, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (result[0] == 30);
+            vxReleaseKernel(&k); vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&policy);
+            vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&tout);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -102,6 +131,33 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            vx_size dims[2] = {4, 4};
+            int16_t a_data[16], b_data[16];
+            for (int i = 0; i < 16; i++) { a_data[i] = 30; b_data[i] = 10; }
+            vx_tensor t1 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_tensor t2 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 4 * sizeof(int16_t)};
+            vxCopyTensorPatch(t1, 2, starts, dims, strides, a_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t2, 2, starts, dims, strides, b_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_enum policy_val = VX_CONVERT_POLICY_SATURATE;
+            vx_scalar policy = vxCreateScalar(ctx, VX_TYPE_ENUM, &policy_val);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_TENSOR_SUBTRACT);
+            vx_node n = vxCreateGenericNode(g, k);
+            vxSetParameterByIndex(n, 0, (vx_reference)t1);
+            vxSetParameterByIndex(n, 1, (vx_reference)t2);
+            vxSetParameterByIndex(n, 2, (vx_reference)policy);
+            vxSetParameterByIndex(n, 3, (vx_reference)tout);
+            vxVerifyGraph(g); vxProcessGraph(g);
+            int16_t result[16] = {};
+            vxCopyTensorPatch(tout, 2, starts, dims, strides, result, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (result[0] == 20);
+            vxReleaseKernel(&k); vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&policy);
+            vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&tout);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -143,6 +199,12 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_TENSOR_MULTIPLY);
+            bool ok = (vxGetStatus((vx_reference)k) == VX_SUCCESS);
+            if (ok) vxReleaseKernel(&k);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -180,6 +242,12 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_TENSOR_TRANSPOSE);
+            bool ok = (vxGetStatus((vx_reference)k) == VX_SUCCESS);
+            if (ok) vxReleaseKernel(&k);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -219,6 +287,12 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_TENSOR_CONVERT_DEPTH);
+            bool ok = (vxGetStatus((vx_reference)k) == VX_SUCCESS);
+            if (ok) vxReleaseKernel(&k);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -255,6 +329,12 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_TENSOR_TABLE_LOOKUP);
+            bool ok = (vxGetStatus((vx_reference)k) == VX_SUCCESS);
+            if (ok) vxReleaseKernel(&k);
+            return ok;
+        };
         cases.push_back(bc);
     }
 #endif

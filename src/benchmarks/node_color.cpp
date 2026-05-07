@@ -25,8 +25,10 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "benchmark_runner.h"
+#include "verify_utils.h"
 #include <VX/vx.h>
 #include <VX/vx_nodes.h>
+#include <VX/vxu.h>
 #include <vector>
 
 std::vector<BenchmarkCase> registerColorBenchmarks() {
@@ -62,6 +64,17 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // 2x2 RGB image (3 bytes per pixel)
+            uint8_t rgb[12] = {255, 0, 0,  0, 255, 0,  0, 0, 255,  128, 128, 128};
+            vx_image in = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_RGB, rgb);
+            vx_image out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_IYUV);
+            vxuColorConvert(ctx, in, out);
+            // Just verify the Y plane has non-zero data (R=255 should produce Y~76)
+            bool ok = verify::imageNonZero(out, 2, 2);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -95,6 +108,15 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            uint8_t rgb[12] = {255, 0, 0,  0, 255, 0,  0, 0, 255,  128, 128, 128};
+            vx_image in = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_RGB, rgb);
+            vx_image out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_NV12);
+            vxuColorConvert(ctx, in, out);
+            bool ok = verify::imageNonZero(out, 2, 2);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -123,6 +145,18 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // 2x2 RGB: R=10,G=20,B=30 for each pixel
+            uint8_t rgb[12] = {10, 20, 30,  40, 50, 60,  70, 80, 90,  100, 110, 120};
+            vx_image in = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_RGB, rgb);
+            vx_image out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_U8);
+            vxuChannelExtract(ctx, in, VX_CHANNEL_R, out);
+            auto result = verify::readImage(out, 2, 2);
+            uint8_t exp[] = {10, 40, 70, 100};
+            bool ok = verify::compareU8(result, {exp, exp + 4});
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -159,6 +193,24 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            uint8_t r[] = {10, 40, 70, 100};
+            uint8_t g[] = {20, 50, 80, 110};
+            uint8_t b[] = {30, 60, 90, 120};
+            vx_image ch0 = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_U8, r);
+            vx_image ch1 = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_U8, g);
+            vx_image ch2 = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_U8, b);
+            vx_image out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_RGB);
+            vxuChannelCombine(ctx, ch0, ch1, ch2, nullptr, out);
+            // Extract R channel back and verify
+            vx_image r_out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_U8);
+            vxuChannelExtract(ctx, out, VX_CHANNEL_R, r_out);
+            auto result = verify::readImage(r_out, 2, 2);
+            bool ok = verify::compareU8(result, {r, r + 4});
+            vxReleaseImage(&ch0); vxReleaseImage(&ch1); vxReleaseImage(&ch2);
+            vxReleaseImage(&out); vxReleaseImage(&r_out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -193,6 +245,22 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            uint8_t a[] = {0, 128, 255, 42};
+            vx_image in = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_U8, a);
+            vx_image out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_S16);
+            vx_int32 shift = 0;
+            vx_scalar s_shift = vxCreateScalar(ctx, VX_TYPE_INT32, &shift);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = vxConvertDepthNode(g, in, out, VX_CONVERT_POLICY_SATURATE, s_shift);
+            vxVerifyGraph(g);
+            vxProcessGraph(g);
+            auto result = verify::readImageS16(out, 2, 2);
+            bool ok = verify::compareS16(result, {0, 128, 255, 42});
+            vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&s_shift);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 

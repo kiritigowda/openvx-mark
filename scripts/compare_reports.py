@@ -125,6 +125,26 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, system_infos=
                     f.write('\n')
                 f.write(f'\n> **Warning:** Benchmarks ran on different hardware — results may not be directly comparable.\n\n')
 
+        # Conformance & Scores summary
+        f.write('## Conformance & Scores\n\n')
+        f.write('| Implementation | Vision Score (MP/s) | Conformance | Verified | Total |\n')
+        f.write('|:---|---:|:---|---:|---:|\n')
+        for i, name in enumerate(impl_names):
+            rm = result_maps[i]
+            total = 0
+            verified_count = 0
+            vision_score = 0.0
+            for key, r in rm.items():
+                if not r.get('supported', False):
+                    continue
+                total += 1
+                if r.get('verified', True):
+                    verified_count += 1
+                    vision_score += r.get('megapixels_per_sec', 0)
+            conformance = 'PASS' if verified_count == total and total > 0 else 'FAIL'
+            f.write(f'| {name} | {vision_score:.2f} | {conformance} | {verified_count}/{total} | {total} |\n')
+        f.write('\n')
+
         # Implementation table
         f.write('## Implementations\n\n')
         f.write('| # | Implementation |\n')
@@ -133,19 +153,13 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, system_infos=
             f.write(f'| {i+1} | {name} |\n')
         f.write('\n')
 
-        # Speedup label: first impl vs second
-        if len(impl_names) >= 2:
-            speedup_label = f'Speedup ({impl_names[0]} vs {impl_names[1]})'
-        else:
-            speedup_label = 'Speedup'
-
         # Results table
         header = '| Benchmark | Mode | Resolution |'
         separator = '|:---|:---|:---|'
         for i, name in enumerate(impl_names):
             short = name[:20] if len(name) > 20 else name
-            header += f' {short} (ms) | {short} (MP/s) |'
-            separator += '---:|---:|'
+            header += f' {short} (ms) | {short} (MP/s) | {short} ✓ |'
+            separator += '---:|---:|:---:|'
 
         header += f' Speedup |'
         separator += '---:|'
@@ -162,14 +176,16 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, system_infos=
             medians = []
             for rm in result_maps:
                 r = rm.get(key)
-                if r and r.get('supported', False) and r.get('verified', True):
+                if r and r.get('supported', False):
+                    verified = r.get('verified', True)
                     wc = r.get('wall_clock', {})
                     median = wc.get('median_ms', 0)
                     mps = r.get('megapixels_per_sec', 0)
-                    row += f' {median:.3f} | {mps:.1f} |'
-                    medians.append(median)
+                    check = '✅' if verified else '❌'
+                    row += f' {median:.3f} | {mps:.1f} | {check} |'
+                    medians.append(median if verified else None)
                 else:
-                    row += ' N/A | N/A |'
+                    row += ' N/A | N/A | — |'
                     medians.append(None)
 
             # Speedup: baseline (second) / candidate (first) — how much faster first is
@@ -188,7 +204,7 @@ def write_csv(impl_names, result_maps, all_keys, output_path):
     with open(output_path + '.csv', 'w') as f:
         header = 'benchmark,mode,resolution'
         for name in impl_names:
-            header += f',{name}_median_ms,{name}_mp_per_sec'
+            header += f',{name}_median_ms,{name}_mp_per_sec,{name}_verified'
         header += ',speedup'
         f.write(header + '\n')
 
@@ -199,14 +215,15 @@ def write_csv(impl_names, result_maps, all_keys, output_path):
             medians = []
             for rm in result_maps:
                 r = rm.get(key)
-                if r and r.get('supported', False) and r.get('verified', True):
+                if r and r.get('supported', False):
+                    verified = r.get('verified', True)
                     wc = r.get('wall_clock', {})
                     median = wc.get('median_ms', 0)
                     mps = r.get('megapixels_per_sec', 0)
-                    row += f',{median:.4f},{mps:.2f}'
-                    medians.append(median)
+                    row += f',{median:.4f},{mps:.2f},{verified}'
+                    medians.append(median if verified else None)
                 else:
-                    row += ',,'
+                    row += ',,,'
                     medians.append(None)
 
             if len(medians) >= 2 and medians[0] and medians[1] and medians[0] > 0:

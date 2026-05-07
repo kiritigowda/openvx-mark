@@ -26,6 +26,8 @@
 
 #include "benchmark_runner.h"
 #include "openvx_version.h"
+#include "verify_utils.h"
+#include <VX/vxu.h>
 #include <vector>
 
 std::vector<BenchmarkCase> registerExtractionBenchmarks() {
@@ -74,6 +76,12 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_MATCH_TEMPLATE);
+            bool ok = (vxGetStatus((vx_reference)k) == VX_SUCCESS);
+            if (ok) vxReleaseKernel(&k);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -120,6 +128,32 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // LBP on a gradient pattern should produce non-zero output
+            uint8_t a[16];
+            for (int i = 0; i < 16; i++) a[i] = (uint8_t)(i * 16);
+            vx_image in = verify::createImage(ctx, 4, 4, VX_DF_IMAGE_U8, a);
+            vx_image out = vxCreateImage(ctx, 4, 4, VX_DF_IMAGE_U8);
+            vx_enum format_val = VX_LBP;
+            vx_scalar format = vxCreateScalar(ctx, VX_TYPE_ENUM, &format_val);
+            vx_int8 ksize = 3;
+            vx_scalar kernel_size = vxCreateScalar(ctx, VX_TYPE_INT8, &ksize);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_LBP);
+            vx_node n = vxCreateGenericNode(g, k);
+            vxReleaseKernel(&k);
+            vxSetParameterByIndex(n, 0, (vx_reference)in);
+            vxSetParameterByIndex(n, 1, (vx_reference)format);
+            vxSetParameterByIndex(n, 2, (vx_reference)kernel_size);
+            vxSetParameterByIndex(n, 3, (vx_reference)out);
+            vxVerifyGraph(g);
+            vxProcessGraph(g);
+            bool ok = verify::imageNonZero(out, 4, 4);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseScalar(&format); vxReleaseScalar(&kernel_size);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -161,6 +195,12 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_NON_MAX_SUPPRESSION);
+            bool ok = (vxGetStatus((vx_reference)k) == VX_SUCCESS);
+            if (ok) vxReleaseKernel(&k);
+            return ok;
+        };
         cases.push_back(bc);
     }
 #endif
