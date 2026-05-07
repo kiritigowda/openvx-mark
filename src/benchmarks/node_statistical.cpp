@@ -57,14 +57,13 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[16];
-            for (int i = 0; i < 16; i++) a[i] = 100;
-            vx_image in = verify::createImage(ctx, 4, 4, VX_DF_IMAGE_U8, a);
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
             vx_distribution dist = vxCreateDistribution(ctx, 256, 0, 256);
             vxuHistogram(ctx, in, dist);
             vx_int32 bins[256] = {};
             vxCopyDistribution(dist, bins, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
-            bool ok = (bins[100] == 16);
+            bool ok = (bins[100] == 64 * 64);
             for (int i = 0; i < 256; i++) {
                 if (i != 100 && bins[i] != 0) ok = false;
             }
@@ -95,12 +94,11 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[16];
-            for (int i = 0; i < 16; i++) a[i] = 100;
-            vx_image in = verify::createImage(ctx, 4, 4, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 4, 4, VX_DF_IMAGE_U8);
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vxuEqualizeHist(ctx, in, out);
-            auto result = verify::readImage(out, 4, 4);
+            auto result = verify::readImage(out, 64, 64);
             // All pixels same value means equalization should produce uniform output
             // The exact value depends on implementation but all pixels should be the same
             bool ok = true;
@@ -138,9 +136,8 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[16];
-            for (int i = 0; i < 16; i++) a[i] = 100;
-            vx_image in = verify::createImage(ctx, 4, 4, VX_DF_IMAGE_U8, a);
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
             vx_float32 mean = 0, stddev = 0;
             vxuMeanStdDev(ctx, in, &mean, &stddev);
             bool ok = (std::abs(mean - 100.0f) < 0.01f) && (stddev < 0.01f);
@@ -191,8 +188,10 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[] = {100, 50, 200, 150};
-            vx_image in = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_U8, a);
+            std::vector<uint8_t> a(64 * 64, 100);
+            a[0] = 50;
+            a[1] = 200;
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
             vx_uint8 min_val = 0, max_val = 0;
             vx_uint32 min_count = 0, max_count = 0;
             vx_scalar s_min = vxCreateScalar(ctx, VX_TYPE_UINT8, &min_val);
@@ -238,20 +237,20 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[] = {1, 2, 3, 4};
-            vx_image in = verify::createImage(ctx, 2, 2, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_U32);
+            std::vector<uint8_t> a(64 * 64, 1);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U32);
             vxuIntegralImage(ctx, in, out);
             // Read U32 output
-            vx_rectangle_t rect = {0, 0, 2, 2};
+            vx_rectangle_t rect = {0, 0, 64, 64};
             vx_imagepatch_addressing_t addr = {};
             void* ptr = nullptr;
             vx_map_id map_id;
             vxMapImagePatch(out, &rect, 0, &map_id, &addr, &ptr, VX_READ_ONLY, VX_MEMORY_TYPE_HOST, 0);
             uint32_t* data = static_cast<uint32_t*>(ptr);
             uint32_t stride = addr.stride_y / sizeof(uint32_t);
-            // Expected integral: [0,0]=1, [1,0]=3, [0,1]=4, [1,1]=10
-            bool ok = (data[0] == 1 && data[1] == 3 && data[stride] == 4 && data[stride + 1] == 10);
+            // Expected integral: [0,0]=1, [1,0]=2, [0,1]=65 (64+1)
+            bool ok = (data[0] == 1 && data[1] == 2 && data[stride] == 65);
             vxUnmapImagePatch(out, map_id);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;

@@ -66,12 +66,12 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            // 8x8 image: top half black, bottom half white — clear horizontal edge
-            uint8_t a[64];
-            for (int i = 0; i < 32; i++) a[i] = 0;
-            for (int i = 32; i < 64; i++) a[i] = 255;
-            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 8, 8, VX_DF_IMAGE_U8);
+            // 64x64 image: top half black (rows 0-31), bottom half white (rows 32-63) — clear horizontal edge
+            std::vector<uint8_t> a(64 * 64);
+            for (int i = 0; i < 64 * 32; i++) a[i] = 0;
+            for (int i = 64 * 32; i < 64 * 64; i++) a[i] = 255;
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_threshold hyst = vxCreateThresholdForImage(ctx, VX_THRESHOLD_TYPE_RANGE, VX_DF_IMAGE_U8, VX_DF_IMAGE_U8);
             vx_pixel_value_t lower_pv = {}, upper_pv = {};
             lower_pv.U8 = 50; upper_pv.U8 = 100;
@@ -80,7 +80,7 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
             vx_node n = vxCannyEdgeDetectorNode(g, in, hyst, 3, VX_NORM_L1, out);
             vxVerifyGraph(g);
             vxProcessGraph(g);
-            bool ok = verify::imageNonZero(out, 8, 8);
+            bool ok = verify::imageNonZero(out, 64, 64);
             vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseThreshold(&hyst);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
@@ -131,11 +131,11 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
             // Verify Harris runs without crashing — corner count varies by implementation
-            uint8_t a[64];
-            for (int y = 0; y < 8; y++)
-                for (int x = 0; x < 8; x++)
-                    a[y * 8 + x] = ((x / 2 + y / 2) % 2) ? 255 : 0;
-            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
+            std::vector<uint8_t> a(64 * 64);
+            for (int y = 0; y < 64; y++)
+                for (int x = 0; x < 64; x++)
+                    a[y * 64 + x] = ((x / 2 + y / 2) % 2) ? 255 : 0;
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
             vx_float32 strength_val = 0.0001f, min_dist_val = 1.0f, sensitivity_val = 0.04f;
             vx_scalar strength = vxCreateScalar(ctx, VX_TYPE_FLOAT32, &strength_val);
             vx_scalar min_dist = vxCreateScalar(ctx, VX_TYPE_FLOAT32, &min_dist_val);
@@ -191,11 +191,11 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[64];
-            for (int y = 0; y < 8; y++)
-                for (int x = 0; x < 8; x++)
-                    a[y * 8 + x] = ((x / 2 + y / 2) % 2) ? 255 : 0;
-            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
+            std::vector<uint8_t> a(64 * 64);
+            for (int y = 0; y < 64; y++)
+                for (int x = 0; x < 64; x++)
+                    a[y * 64 + x] = ((x / 2 + y / 2) % 2) ? 255 : 0;
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
             vx_float32 strength_val = 10.0f;
             vx_scalar strength = vxCreateScalar(ctx, VX_TYPE_FLOAT32, &strength_val);
             vx_array corners = vxCreateArray(ctx, VX_TYPE_KEYPOINT, 100);
@@ -204,10 +204,8 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
             vx_graph g = vxCreateGraph(ctx);
             vx_node n = vxFastCornersNode(g, in, strength, vx_true_e, corners, num_corners);
             vxVerifyGraph(g);
-            vxProcessGraph(g);
-            vxCopyScalar(num_corners, &num, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
-            // FAST may or may not detect corners on 8x8 — just check no crash. Accept any result.
-            bool ok = true; // Verify graph ran successfully
+            vx_status status = vxProcessGraph(g);
+            bool ok = (status == VX_SUCCESS);
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseScalar(&strength); vxReleaseScalar(&num_corners);
             vxReleaseArray(&corners); vxReleaseImage(&in);

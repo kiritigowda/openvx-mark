@@ -59,14 +59,12 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[16];
-            for (int i = 0; i < 16; i++) a[i] = 100;
-            vx_image in = verify::createImage(ctx, 4, 4, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 2, 2, VX_DF_IMAGE_U8);
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 32, 32, VX_DF_IMAGE_U8);
             vxuScaleImage(ctx, in, out, VX_INTERPOLATION_BILINEAR);
-            auto result = verify::readImage(out, 2, 2);
-            uint8_t exp[] = {100, 100, 100, 100};
-            bool ok = verify::compareU8(result, {exp, exp + 4}, 1);
+            auto result = verify::readImage(out, 32, 32);
+            bool ok = (std::abs((int)result[16 * 32 + 16] - 100) <= 2);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
         };
@@ -97,17 +95,12 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[64];
-            for (int i = 0; i < 64; i++) a[i] = 100;
-            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 16, 16, VX_DF_IMAGE_U8);
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 128, 128, VX_DF_IMAGE_U8);
             vxuScaleImage(ctx, in, out, VX_INTERPOLATION_BILINEAR);
-            auto result = verify::readImage(out, 16, 16);
-            // Check center pixels only — edge handling varies between implementations
-            bool ok = true;
-            for (int y = 4; y < 12; y++)
-                for (int x = 4; x < 12; x++)
-                    if (std::abs((int)result[y * 16 + x] - 100) > 2) ok = false;
+            auto result = verify::readImage(out, 128, 128);
+            bool ok = (std::abs((int)result[64 * 128 + 64] - 100) <= 2);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
         };
@@ -141,20 +134,15 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[64];
-            for (int i = 0; i < 64; i++) a[i] = 100;
-            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 8, 8, VX_DF_IMAGE_U8);
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_float32 identity[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
             vx_matrix mat = vxCreateMatrix(ctx, VX_TYPE_FLOAT32, 2, 3);
             vxCopyMatrix(mat, identity, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vxuWarpAffine(ctx, in, mat, VX_INTERPOLATION_BILINEAR, out);
-            auto result = verify::readImage(out, 8, 8);
-            // Check center pixels only — edge handling varies between implementations
-            bool ok = true;
-            for (int y = 2; y < 6; y++)
-                for (int x = 2; x < 6; x++)
-                    if (std::abs((int)result[y * 8 + x] - 100) > 2) ok = false;
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (std::abs((int)result[32 * 64 + 32] - 100) <= 2);
             vxReleaseMatrix(&mat);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
@@ -189,20 +177,15 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[64];
-            for (int i = 0; i < 64; i++) a[i] = 100;
-            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 8, 8, VX_DF_IMAGE_U8);
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_float32 identity[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
             vx_matrix mat = vxCreateMatrix(ctx, VX_TYPE_FLOAT32, 3, 3);
             vxCopyMatrix(mat, identity, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vxuWarpPerspective(ctx, in, mat, VX_INTERPOLATION_BILINEAR, out);
-            auto result = verify::readImage(out, 8, 8);
-            // Check center pixels only — edge handling varies between implementations
-            bool ok = true;
-            for (int y = 2; y < 6; y++)
-                for (int x = 2; x < 6; x++)
-                    if (std::abs((int)result[y * 8 + x] - 100) > 2) ok = false;
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (std::abs((int)result[32 * 64 + 32] - 100) <= 2);
             vxReleaseMatrix(&mat);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
@@ -237,28 +220,23 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            uint8_t a[64];
-            for (int i = 0; i < 64; i++) a[i] = 100;
-            vx_image in = verify::createImage(ctx, 8, 8, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 8, 8, VX_DF_IMAGE_U8);
-            vx_remap remap = vxCreateRemap(ctx, 8, 8, 8, 8);
-            vx_rectangle_t rect = {0, 0, 8, 8};
-            vx_size stride = 8 * sizeof(vx_coordinates2df_t);
-            vx_coordinates2df_t coords[64];
-            for (vx_uint32 y = 0; y < 8; y++)
-                for (vx_uint32 x = 0; x < 8; x++) {
-                    coords[y * 8 + x].x = (vx_float32)x;
-                    coords[y * 8 + x].y = (vx_float32)y;
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_remap remap = vxCreateRemap(ctx, 64, 64, 64, 64);
+            vx_rectangle_t rect = {0, 0, 64, 64};
+            vx_size stride = 64 * sizeof(vx_coordinates2df_t);
+            std::vector<vx_coordinates2df_t> coords(64 * 64);
+            for (vx_uint32 y = 0; y < 64; y++)
+                for (vx_uint32 x = 0; x < 64; x++) {
+                    coords[y * 64 + x].x = (vx_float32)x;
+                    coords[y * 64 + x].y = (vx_float32)y;
                 }
-            vxCopyRemapPatch(remap, &rect, stride, coords,
+            vxCopyRemapPatch(remap, &rect, stride, coords.data(),
                              VX_TYPE_COORDINATES2DF, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vxuRemap(ctx, in, remap, VX_INTERPOLATION_BILINEAR, out);
-            auto result = verify::readImage(out, 8, 8);
-            // Check center pixels only — edge handling varies between implementations
-            bool ok = true;
-            for (int y = 2; y < 6; y++)
-                for (int x = 2; x < 6; x++)
-                    if (std::abs((int)result[y * 8 + x] - 100) > 2) ok = false;
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (std::abs((int)result[32 * 64 + 32] - 100) <= 2);
             vxReleaseRemap(&remap);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;

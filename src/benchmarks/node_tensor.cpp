@@ -70,15 +70,14 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            vx_size dims[2] = {4, 4};
-            int16_t a_data[16], b_data[16];
-            for (int i = 0; i < 16; i++) { a_data[i] = 10; b_data[i] = 20; }
+            vx_size dims[2] = {64, 64};
+            std::vector<int16_t> a_data(64 * 64, 10), b_data(64 * 64, 20);
             vx_tensor t1 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor t2 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
-            vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 4 * sizeof(int16_t)};
-            vxCopyTensorPatch(t1, 2, starts, dims, strides, a_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-            vxCopyTensorPatch(t2, 2, starts, dims, strides, b_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 64 * sizeof(int16_t)};
+            vxCopyTensorPatch(t1, 2, starts, dims, strides, a_data.data(), VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t2, 2, starts, dims, strides, b_data.data(), VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vx_enum policy_val = VX_CONVERT_POLICY_SATURATE;
             vx_scalar policy = vxCreateScalar(ctx, VX_TYPE_ENUM, &policy_val);
             vx_graph g = vxCreateGraph(ctx);
@@ -89,8 +88,8 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             vxSetParameterByIndex(n, 2, (vx_reference)policy);
             vxSetParameterByIndex(n, 3, (vx_reference)tout);
             vxVerifyGraph(g); vxProcessGraph(g);
-            int16_t result[16] = {};
-            vxCopyTensorPatch(tout, 2, starts, dims, strides, result, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            std::vector<int16_t> result(64 * 64, 0);
+            vxCopyTensorPatch(tout, 2, starts, dims, strides, result.data(), VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
             bool ok = (result[0] == 30);
             vxReleaseKernel(&k); vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&policy);
             vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&tout);
@@ -132,15 +131,14 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            vx_size dims[2] = {4, 4};
-            int16_t a_data[16], b_data[16];
-            for (int i = 0; i < 16; i++) { a_data[i] = 30; b_data[i] = 10; }
+            vx_size dims[2] = {64, 64};
+            std::vector<int16_t> a_data(64 * 64, 30), b_data(64 * 64, 10);
             vx_tensor t1 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor t2 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
-            vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 4 * sizeof(int16_t)};
-            vxCopyTensorPatch(t1, 2, starts, dims, strides, a_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-            vxCopyTensorPatch(t2, 2, starts, dims, strides, b_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 64 * sizeof(int16_t)};
+            vxCopyTensorPatch(t1, 2, starts, dims, strides, a_data.data(), VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t2, 2, starts, dims, strides, b_data.data(), VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vx_enum policy_val = VX_CONVERT_POLICY_SATURATE;
             vx_scalar policy = vxCreateScalar(ctx, VX_TYPE_ENUM, &policy_val);
             vx_graph g = vxCreateGraph(ctx);
@@ -151,8 +149,8 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             vxSetParameterByIndex(n, 2, (vx_reference)policy);
             vxSetParameterByIndex(n, 3, (vx_reference)tout);
             vxVerifyGraph(g); vxProcessGraph(g);
-            int16_t result[16] = {};
-            vxCopyTensorPatch(tout, 2, starts, dims, strides, result, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            std::vector<int16_t> result(64 * 64, 0);
+            vxCopyTensorPatch(tout, 2, starts, dims, strides, result.data(), VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
             bool ok = (result[0] == 20);
             vxReleaseKernel(&k); vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&policy);
             vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&tout);

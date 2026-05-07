@@ -130,10 +130,12 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
             // LBP on a gradient pattern should produce non-zero output
-            uint8_t a[16];
-            for (int i = 0; i < 16; i++) a[i] = (uint8_t)(i * 16);
-            vx_image in = verify::createImage(ctx, 4, 4, VX_DF_IMAGE_U8, a);
-            vx_image out = vxCreateImage(ctx, 4, 4, VX_DF_IMAGE_U8);
+            std::vector<uint8_t> a(64 * 64);
+            for (int y = 0; y < 64; y++)
+                for (int x = 0; x < 64; x++)
+                    a[y * 64 + x] = (uint8_t)((x + y * 64) % 256);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_enum format_val = VX_LBP;
             vx_scalar format = vxCreateScalar(ctx, VX_TYPE_ENUM, &format_val);
             vx_int8 ksize = 3;
@@ -148,7 +150,7 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             vxSetParameterByIndex(n, 3, (vx_reference)out);
             vxVerifyGraph(g);
             vxProcessGraph(g);
-            bool ok = verify::imageNonZero(out, 4, 4);
+            bool ok = verify::imageNonZero(out, 64, 64);
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseScalar(&format); vxReleaseScalar(&kernel_size);
             vxReleaseImage(&in); vxReleaseImage(&out);
