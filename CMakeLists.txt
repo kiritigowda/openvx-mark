@@ -98,6 +98,7 @@ set(BENCHMARK_SOURCES
     src/kernel_registry.cpp
     src/test_data_generator.cpp
     src/system_info.cpp
+    src/verify_utils.cpp
     src/benchmarks/node_pixelwise.cpp
     src/benchmarks/node_filters.cpp
     src/benchmarks/node_color.cpp

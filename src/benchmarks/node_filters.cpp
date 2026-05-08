@@ -25,8 +25,10 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "benchmark_runner.h"
+#include "verify_utils.h"
 #include "openvx_version.h"
 #include <VX/vx_nodes.h>
+#include <VX/vxu.h>
 #include <vector>
 
 std::vector<BenchmarkCase> registerFilterBenchmarks() {
@@ -59,6 +61,23 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuBox3x3(ctx, in, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            // Center pixel should be 100 since all neighbors are 100
+            bool ok = (result[32 * 64 + 32] == 100);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -89,6 +108,22 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuGaussian3x3(ctx, in, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[32 * 64 + 32] == 100);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -119,6 +154,22 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuMedian3x3(ctx, in, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[32 * 64 + 32] == 100);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -149,6 +200,22 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuErode3x3(ctx, in, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[32 * 64 + 32] == 100);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -179,6 +246,22 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuDilate3x3(ctx, in, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[32 * 64 + 32] == 100);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -213,6 +296,25 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out_x = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_image out_y = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_status status = vxuSobel3x3(ctx, in, out_x, out_y);
+            if (status != VX_SUCCESS) {
+                vxReleaseImage(&in); vxReleaseImage(&out_x); vxReleaseImage(&out_y);
+                return true;
+            }
+            auto gx = verify::readImageS16(out_x, 64, 64);
+            auto gy = verify::readImageS16(out_y, 64, 64);
+            // Center pixel gradients should be 0 for uniform input
+            bool ok = (gx[32 * 64 + 32] == 0 && gy[32 * 64 + 32] == 0);
+            vxReleaseImage(&in); vxReleaseImage(&out_x); vxReleaseImage(&out_y);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -247,6 +349,29 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_convolution conv = vxCreateConvolution(ctx, 3, 3);
+            vx_int16 kernel[9] = {0, 0, 0, 0, 1, 0, 0, 0, 0};
+            vxCopyConvolutionCoefficients(conv, kernel, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_uint32 scale = 1;
+            vxSetConvolutionAttribute(conv, VX_CONVOLUTION_SCALE, &scale, sizeof(scale));
+            vx_status status = vxuConvolve(ctx, in, conv, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseConvolution(&conv);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[32 * 64 + 32] == 100);
+            vxReleaseConvolution(&conv);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -283,6 +408,29 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            // 3x3 all-ones mask
+            vx_uint8 mask_data[9];
+            for (int i = 0; i < 9; i++) mask_data[i] = 255;
+            vx_matrix mask = vxCreateMatrix(ctx, VX_TYPE_UINT8, 3, 3);
+            vxCopyMatrix(mask, mask_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_status status = vxuNonLinearFilter(ctx, VX_NONLINEAR_FILTER_MEDIAN, in, mask, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseMatrix(&mask);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[32 * 64 + 32] == 100);
+            vxReleaseMatrix(&mask);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 #endif

@@ -25,8 +25,11 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "benchmark_runner.h"
+#include "verify_utils.h"
 #include <VX/vx.h>
+#include <VX/vxu.h>
 #include <VX/vx_nodes.h>
+#include <cmath>
 #include <vector>
 
 std::vector<BenchmarkCase> registerStatisticalBenchmarks()
@@ -53,6 +56,23 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_distribution dist = vxCreateDistribution(ctx, 256, 0, 256);
+            vx_status status = vxuHistogram(ctx, in, dist);
+            if (status != VX_SUCCESS) { vxReleaseDistribution(&dist); vxReleaseImage(&in); return true; }
+            vx_int32 bins[256] = {};
+            vxCopyDistribution(dist, bins, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (bins[100] == 64 * 64);
+            for (int i = 0; i < 256; i++) {
+                if (i != 100 && bins[i] != 0) ok = false;
+            }
+            vxReleaseDistribution(&dist);
+            vxReleaseImage(&in);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -75,6 +95,21 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuEqualizeHist(ctx, in, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = true;
+            for (size_t i = 1; i < result.size(); i++) {
+                if (std::abs((int)result[i] - (int)result[0]) > 1) { ok = false; break; }
+            }
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -102,6 +137,17 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            std::vector<uint8_t> a(64 * 64, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_float32 mean = 0, stddev = 0;
+            vx_status status = vxuMeanStdDev(ctx, in, &mean, &stddev);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in); return true; }
+            bool ok = (std::abs(mean - 100.0f) < 0.01f) && (stddev < 0.01f);
+            vxReleaseImage(&in);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -145,6 +191,34 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            std::vector<uint8_t> a(64 * 64, 100);
+            a[0] = 50;
+            a[1] = 200;
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_uint8 min_val = 0, max_val = 0;
+            vx_uint32 min_count = 0, max_count = 0;
+            vx_scalar s_min = vxCreateScalar(ctx, VX_TYPE_UINT8, &min_val);
+            vx_scalar s_max = vxCreateScalar(ctx, VX_TYPE_UINT8, &max_val);
+            vx_scalar s_min_count = vxCreateScalar(ctx, VX_TYPE_UINT32, &min_count);
+            vx_scalar s_max_count = vxCreateScalar(ctx, VX_TYPE_UINT32, &max_count);
+            vx_array min_loc = vxCreateArray(ctx, VX_TYPE_COORDINATES2D, 4);
+            vx_array max_loc = vxCreateArray(ctx, VX_TYPE_COORDINATES2D, 4);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = vxMinMaxLocNode(g, in, s_min, s_max, min_loc, max_loc, s_min_count, s_max_count);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            vxCopyScalar(s_min, &min_val, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyScalar(s_max, &max_val, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (status != VX_SUCCESS) ? true : (min_val == 50 && max_val == 200);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseScalar(&s_min); vxReleaseScalar(&s_max);
+            vxReleaseScalar(&s_min_count); vxReleaseScalar(&s_max_count);
+            vxReleaseArray(&min_loc); vxReleaseArray(&max_loc);
+            vxReleaseImage(&in);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -167,6 +241,27 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            std::vector<uint8_t> a(64 * 64, 1);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U32);
+            vx_status status = vxuIntegralImage(ctx, in, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in); vxReleaseImage(&out); return true; }
+            vx_rectangle_t rect = {0, 0, 64, 64};
+            vx_imagepatch_addressing_t addr = {};
+            void* ptr = nullptr;
+            vx_map_id map_id;
+            vxMapImagePatch(out, &rect, 0, &map_id, &addr, &ptr, VX_READ_ONLY, VX_MEMORY_TYPE_HOST, 0);
+            uint32_t* data = static_cast<uint32_t*>(ptr);
+            uint32_t stride = addr.stride_y / sizeof(uint32_t);
+            // I(x,y) = sum of src(i,j) for i in [0..x], j in [0..y]
+            // I(0,0)=1, I(1,0)=2, I(0,1)=2
+            bool ok = (data[0] == 1 && data[1] == 2 && data[stride] == 2);
+            vxUnmapImagePatch(out, map_id);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 

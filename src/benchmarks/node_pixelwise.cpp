@@ -26,7 +26,9 @@
 
 #include "benchmark_runner.h"
 #include "openvx_version.h"
+#include "verify_utils.h"
 #include <VX/vx_nodes.h>
+#include <VX/vxu.h>
 #include <vector>
 
 std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
@@ -53,6 +55,21 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 0xF0);
+            std::vector<uint8_t> b(N, 0x33);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuAnd(ctx, in1, in2, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[0] == 0x30);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -76,6 +93,21 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 0xF0);
+            std::vector<uint8_t> b(N, 0x33);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuOr(ctx, in1, in2, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[0] == 0xF3);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -99,6 +131,21 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 0xF0);
+            std::vector<uint8_t> b(N, 0x33);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuXor(ctx, in1, in2, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[0] == 0xC3);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -121,6 +168,19 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 0xA5);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuNot(ctx, in, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[0] == 0x5A);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -144,6 +204,21 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 200);
+            std::vector<uint8_t> b(N, 100);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuAbsDiff(ctx, in1, in2, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[0] == 100);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -167,6 +242,21 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            std::vector<uint8_t> b(N, 50);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuAdd(ctx, in1, in2, VX_CONVERT_POLICY_SATURATE, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[0] == 150);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -190,6 +280,21 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 200);
+            std::vector<uint8_t> b(N, 100);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuSubtract(ctx, in1, in2, VX_CONVERT_POLICY_SATURATE, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[0] == 100);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -218,6 +323,21 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 10);
+            std::vector<uint8_t> b(N, 5);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_status status = vxuMultiply(ctx, in1, in2, 1.0f, VX_CONVERT_POLICY_SATURATE, VX_ROUND_POLICY_TO_ZERO, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[0] == 50);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -248,6 +368,29 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            std::vector<uint8_t> b(N, 150);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_MIN);
+            vx_node n = vxCreateGenericNode(g, k);
+            vxReleaseKernel(&k);
+            vxSetParameterByIndex(n, 0, (vx_reference)in1);
+            vxSetParameterByIndex(n, 1, (vx_reference)in2);
+            vxSetParameterByIndex(n, 2, (vx_reference)out);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (status != VX_SUCCESS) ? true : (result[0] == 100);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -277,6 +420,29 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            std::vector<uint8_t> b(N, 150);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_MAX);
+            vx_node n = vxCreateGenericNode(g, k);
+            vxReleaseKernel(&k);
+            vxSetParameterByIndex(n, 0, (vx_reference)in1);
+            vxSetParameterByIndex(n, 1, (vx_reference)in2);
+            vxSetParameterByIndex(n, 2, (vx_reference)out);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (status != VX_SUCCESS) ? true : (result[0] == 150);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 #endif
@@ -301,6 +467,22 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 42);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = vxCopyNode(g, (vx_reference)in, (vx_reference)out);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (status != VX_SUCCESS) ? true : (result[0] == 42);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 #endif

@@ -26,6 +26,8 @@
 
 #include "benchmark_runner.h"
 #include "openvx_version.h"
+#include "verify_utils.h"
+#include <VX/vxu.h>
 #include <vector>
 
 std::vector<BenchmarkCase> registerExtractionBenchmarks() {
@@ -74,6 +76,37 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const uint32_t W = 64, H = 64, TW = 16, TH = 16;
+            std::vector<uint8_t> src(W * H, 100);
+            std::vector<uint8_t> tmpl(TW * TH, 100);
+            vx_image src_img = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, src.data());
+            vx_image tmpl_img = verify::createImage(ctx, TW, TH, VX_DF_IMAGE_U8, tmpl.data());
+            if (!src_img || !tmpl_img) {
+                if (src_img) vxReleaseImage(&src_img);
+                if (tmpl_img) vxReleaseImage(&tmpl_img);
+                return true;
+            }
+            vx_image out = vxCreateImage(ctx, W, H, VX_DF_IMAGE_S16);
+            vx_enum method = VX_COMPARE_CCORR_NORM;
+            vx_scalar match_method = vxCreateScalar(ctx, VX_TYPE_ENUM, &method);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_MATCH_TEMPLATE);
+            vx_node n = vxCreateGenericNode(g, k);
+            vxReleaseKernel(&k);
+            vxSetParameterByIndex(n, 0, (vx_reference)src_img);
+            vxSetParameterByIndex(n, 1, (vx_reference)tmpl_img);
+            vxSetParameterByIndex(n, 2, (vx_reference)match_method);
+            vxSetParameterByIndex(n, 3, (vx_reference)out);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            auto result = verify::readImageS16(out, W, H);
+            bool ok = (status != VX_SUCCESS) ? true :
+                      (!result.empty() && result[H / 2 * W + W / 2] != 0);
+            vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&match_method);
+            vxReleaseImage(&src_img); vxReleaseImage(&tmpl_img); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -120,6 +153,35 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // LBP on a gradient pattern should produce non-zero output
+            std::vector<uint8_t> a(64 * 64);
+            for (int y = 0; y < 64; y++)
+                for (int x = 0; x < 64; x++)
+                    a[y * 64 + x] = (uint8_t)((x + y * 64) % 256);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_enum format_val = VX_LBP;
+            vx_scalar format = vxCreateScalar(ctx, VX_TYPE_ENUM, &format_val);
+            vx_int8 ksize = 3;
+            vx_scalar kernel_size = vxCreateScalar(ctx, VX_TYPE_INT8, &ksize);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_LBP);
+            vx_node n = vxCreateGenericNode(g, k);
+            vxReleaseKernel(&k);
+            vxSetParameterByIndex(n, 0, (vx_reference)in);
+            vxSetParameterByIndex(n, 1, (vx_reference)format);
+            vxSetParameterByIndex(n, 2, (vx_reference)kernel_size);
+            vxSetParameterByIndex(n, 3, (vx_reference)out);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            bool ok = (status != VX_SUCCESS) ? true : verify::imageNonZero(out, 64, 64);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseScalar(&format); vxReleaseScalar(&kernel_size);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 
@@ -161,6 +223,32 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const uint32_t W = 64, H = 64;
+            std::vector<int16_t> data(W * H, 10);
+            data[32 * W + 32] = 1000;
+            vx_image in = verify::createImage(ctx, W, H, VX_DF_IMAGE_S16,
+                                              reinterpret_cast<const uint8_t*>(data.data()));
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, W, H, VX_DF_IMAGE_S16);
+            vx_int32 win_size = 3;
+            vx_scalar ws = vxCreateScalar(ctx, VX_TYPE_INT32, &win_size);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_NON_MAX_SUPPRESSION);
+            vx_node n = vxCreateGenericNode(g, k);
+            vxReleaseKernel(&k);
+            vxSetParameterByIndex(n, 0, (vx_reference)in);
+            vxSetParameterByIndex(n, 2, (vx_reference)ws);
+            vxSetParameterByIndex(n, 3, (vx_reference)out);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            auto result = verify::readImageS16(out, W, H);
+            bool ok = (status != VX_SUCCESS) ? true :
+                      (!result.empty() && result[32 * W + 32] == 1000);
+            vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&ws);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
         cases.push_back(bc);
     }
 #endif

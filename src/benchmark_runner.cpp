@@ -175,6 +175,14 @@ BenchmarkResult BenchmarkRunner::runGraphMode(const BenchmarkCase& bc, const Res
         vxProcessGraph(graph);
     }
 
+    // Output verification
+    if (bc.verify_fn) {
+        if (!bc.verify_fn(ctx)) {
+            result.verified = false;
+            result.skip_reason = "output verification failed";
+        }
+    }
+
     // Measurement
     std::vector<double> samples;
     samples.reserve(config_.iterations);

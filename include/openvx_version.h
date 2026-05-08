@@ -49,4 +49,43 @@
 #define OPENVX_HAS_1_3 0
 #endif
 
+// Compatibility wrappers: OpenVX 1.3 APIs that map to 1.1 equivalents
+#if !OPENVX_HAS_1_3
+
+static inline vx_threshold vxCreateThresholdForImage(vx_context ctx,
+    vx_enum thresh_type, vx_df_image /*in_fmt*/, vx_df_image /*out_fmt*/) {
+    return vxCreateThreshold(ctx, thresh_type, VX_TYPE_UINT8);
+}
+
+static inline vx_status vxCopyThresholdValue(vx_threshold thresh,
+    vx_pixel_value_t *value, vx_enum usage, vx_enum /*mem_type*/) {
+    if (usage == VX_WRITE_ONLY) {
+        vx_int32 v = value->U8;
+        return vxSetThresholdAttribute(thresh,
+            VX_THRESHOLD_THRESHOLD_VALUE, &v, sizeof(v));
+    }
+    return VX_ERROR_NOT_SUPPORTED;
+}
+
+static inline vx_status vxCopyThresholdRange(vx_threshold thresh,
+    vx_pixel_value_t *lower, vx_pixel_value_t *upper,
+    vx_enum usage, vx_enum /*mem_type*/) {
+    if (usage == VX_WRITE_ONLY) {
+        vx_int32 lo = lower->U8, hi = upper->U8;
+        vx_status s = vxSetThresholdAttribute(thresh,
+            VX_THRESHOLD_THRESHOLD_LOWER, &lo, sizeof(lo));
+        if (s != VX_SUCCESS) return s;
+        return vxSetThresholdAttribute(thresh,
+            VX_THRESHOLD_THRESHOLD_UPPER, &hi, sizeof(hi));
+    }
+    return VX_ERROR_NOT_SUPPORTED;
+}
+
+// OpenVX 1.1 uses vxSetRemapPoint per pixel instead of vxCopyRemapPatch
+#define OPENVX_USE_SET_REMAP_POINT 1
+
+#else
+#define OPENVX_USE_SET_REMAP_POINT 0
+#endif
+
 #endif // OPENVX_VERSION_H

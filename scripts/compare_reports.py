@@ -62,6 +62,13 @@ def get_system_info(report):
     return report.get('system', {})
 
 
+def format_ram(ram_value):
+    """Format RAM value from report (may be gb float or bytes int)."""
+    if isinstance(ram_value, (int,)) and ram_value > 1e9:
+        return f'{ram_value / (1024**3):.1f} GB'
+    return f'{ram_value} GB'
+
+
 def compare(reports, paths):
     impl_names = []
     result_maps = []
@@ -73,7 +80,6 @@ def compare(reports, paths):
         result_maps.append(build_result_map(report))
         system_infos.append(get_system_info(report))
 
-    # Collect all unique benchmark keys
     all_keys = set()
     for rm in result_maps:
         all_keys.update(rm.keys())
@@ -83,18 +89,12 @@ def compare(reports, paths):
     return impl_names, result_maps, all_keys, system_infos
 
 
-def format_ram(ram_value):
-    """Format RAM value from report (may be gb float or bytes int)."""
-    if isinstance(ram_value, (int,)) and ram_value > 1e9:
-        return f'{ram_value / (1024**3):.1f} GB'
-    return f'{ram_value} GB'
-
-
-def write_markdown(impl_names, result_maps, all_keys, output_path, system_infos=None):
+def write_markdown(impl_names, result_maps, all_keys, output_path, reports, system_infos=None):
     with open(output_path + '.md', 'w') as f:
         f.write('# OpenVX Benchmark Comparison\n\n')
+        f.write(f'**{impl_names[0]}** vs **{impl_names[1]}**\n\n')
 
-        # Hardware / system info section
+        # --- System Info ---
         if system_infos and len(system_infos) >= 2:
             hw_match = (system_infos[0].get('cpu_model') == system_infos[1].get('cpu_model')
                         and system_infos[0].get('cpu_cores') == system_infos[1].get('cpu_cores'))
@@ -102,13 +102,13 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, system_infos=
             f.write('## System Info\n\n')
             if hw_match:
                 si = system_infos[0]
-                f.write(f'| Property | Value |\n')
-                f.write(f'|:---|:---|\n')
+                f.write('| Property | Value |\n')
+                f.write('|:---|:---|\n')
                 f.write(f'| CPU | {si.get("cpu_model", "N/A")} |\n')
                 f.write(f'| Cores | {si.get("cpu_cores", "N/A")} |\n')
                 f.write(f'| RAM | {format_ram(si.get("ram_gb", si.get("ram_bytes", "N/A")))} |\n')
                 f.write(f'| OS | {si.get("os_name", "N/A")} {si.get("os_version", "")} |\n')
-                f.write(f'\n> **Same hardware** — both benchmarks ran on identical hardware.\n\n')
+                f.write(f'\n> Same hardware — both benchmarks ran on identical hardware.\n\n')
             else:
                 f.write(f'| Property |')
                 for name in impl_names:
@@ -118,103 +118,267 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, system_infos=
                     f.write(':---|')
                 f.write('\n')
                 for prop, key in [('CPU', 'cpu_model'), ('Cores', 'cpu_cores'),
-                                  ('OS', 'os_name')]:
+                                  ('RAM', 'ram_gb'), ('OS', 'os_name')]:
                     f.write(f'| {prop} |')
                     for si in system_infos:
-                        f.write(f' {si.get(key, "N/A")} |')
+                        val = si.get(key, 'N/A')
+                        if key == 'ram_gb' and val != 'N/A':
+                            val = format_ram(val)
+                        f.write(f' {val} |')
                     f.write('\n')
                 f.write(f'\n> **Warning:** Benchmarks ran on different hardware — results may not be directly comparable.\n\n')
 
-        # Implementation table
-        f.write('## Implementations\n\n')
-        f.write('| # | Implementation |\n')
-        f.write('|---|---|\n')
-        for i, name in enumerate(impl_names):
-            f.write(f'| {i+1} | {name} |\n')
-        f.write('\n')
+        # --- Conformance & Scores ---
+        f.write('## Conformance & Scores\n\n')
+        f.write(f'| Metric | {impl_names[0]} | {impl_names[1]} |\n')
+        f.write('|:---|---:|---:|\n')
 
-        # Speedup label: first impl vs second
-        if len(impl_names) >= 2:
-            speedup_label = f'Speedup ({impl_names[0]} vs {impl_names[1]})'
-        else:
-            speedup_label = 'Speedup'
+        scores = []
+        for i, report in enumerate(reports):
+            s = report.get('scores', {})
+            scores.append(s)
 
-        # Results table
-        header = '| Benchmark | Mode | Resolution |'
-        separator = '|:---|:---|:---|'
-        for i, name in enumerate(impl_names):
-            short = name[:20] if len(name) > 20 else name
-            header += f' {short} (ms) | {short} (MP/s) |'
-            separator += '---:|---:|'
+        vision_a = scores[0].get('overall_vision_score', 0) if len(scores) > 0 else 0
+        vision_b = scores[1].get('overall_vision_score', 0) if len(scores) > 1 else 0
+        f.write(f'| Vision Score (MP/s) | {vision_a:.2f} | {vision_b:.2f} |\n')
 
-        header += f' Speedup |'
-        separator += '---:|'
+        enhanced_a = scores[0].get('enhanced_vision_score', 0) if len(scores) > 0 else 0
+        enhanced_b = scores[1].get('enhanced_vision_score', 0) if len(scores) > 1 else 0
+        if enhanced_a > 0 or enhanced_b > 0:
+            f.write(f'| Enhanced Vision Score (MP/s) | {enhanced_a:.2f} | {enhanced_b:.2f} |\n')
 
-        f.write('## Results\n\n')
-        f.write(f'> Speedup = how much faster **{impl_names[0]}** is compared to **{impl_names[1]}** (higher is better)\n\n')
-        f.write(header + '\n')
-        f.write(separator + '\n')
+        conformance_info = []
+        for report in reports:
+            conf_list = report.get('conformance', [])
+            if conf_list:
+                c = conf_list[0]
+                conformance_info.append({
+                    'pass': c.get('pass', False),
+                    'passed': c.get('passed', 0),
+                    'total': c.get('total', 0),
+                    'missing': c.get('missing_kernels', [])
+                })
+            else:
+                conformance_info.append({'pass': False, 'passed': 0, 'total': 0, 'missing': []})
 
+        ca, cb = conformance_info[0], conformance_info[1]
+        f.write(f'| Conformance | {"PASS" if ca["pass"] else "FAIL"} ({ca["passed"]}/{ca["total"]}) '
+                f'| {"PASS" if cb["pass"] else "FAIL"} ({cb["passed"]}/{cb["total"]}) |\n\n')
+
+        # --- Category Sub-Scores ---
+        cat_scores_a = scores[0].get('category_scores', {}) if len(scores) > 0 else {}
+        cat_scores_b = scores[1].get('category_scores', {}) if len(scores) > 1 else {}
+
+        all_cat_entries = {}
+        for fs in set(list(cat_scores_a.keys()) + list(cat_scores_b.keys())):
+            cats_a = cat_scores_a.get(fs, {})
+            cats_b = cat_scores_b.get(fs, {})
+            for cat in set(list(cats_a.keys()) + list(cats_b.keys())):
+                key = f'{fs}/{cat}'
+                all_cat_entries[key] = (cats_a.get(cat, 0), cats_b.get(cat, 0))
+
+        if all_cat_entries:
+            f.write('## Category Sub-Scores\n\n')
+            f.write(f'| Category | {impl_names[0]} (MP/s) | {impl_names[1]} (MP/s) | Change % |\n')
+            f.write('|:---|---:|---:|---:|\n')
+            for key in sorted(all_cat_entries.keys()):
+                a_val, b_val = all_cat_entries[key]
+                change = ((b_val - a_val) / a_val * 100) if a_val > 0 else 0
+                display = key.split('/')[-1] if '/' in key else key
+                sign = '+' if change >= 0 else ''
+                f.write(f'| {display} | {a_val:.2f} | {b_val:.2f} | {sign}{change:.1f} |\n')
+            f.write('\n')
+
+        # --- Build comparison rows (include all results, not just verified) ---
+        comparison_rows = []
         for key in all_keys:
             name, mode, resolution = key
-            row = f'| {name} | {mode} | {resolution} |'
+            r_a = result_maps[0].get(key)
+            r_b = result_maps[1].get(key)
 
-            medians = []
-            for rm in result_maps:
-                r = rm.get(key)
-                if r and r.get('supported', False) and r.get('verified', True):
+            if not r_a and not r_b:
+                continue
+
+            row = {'name': name, 'mode': mode, 'resolution': resolution}
+
+            for side, r in [('a', r_a), ('b', r_b)]:
+                if r:
+                    row[f'supported_{side}'] = r.get('supported', False)
+                    row[f'verified_{side}'] = r.get('verified', True) if r.get('supported', False) else False
                     wc = r.get('wall_clock', {})
-                    median = wc.get('median_ms', 0)
-                    mps = r.get('megapixels_per_sec', 0)
-                    row += f' {median:.3f} | {mps:.1f} |'
-                    medians.append(median)
+                    row[f'median_{side}'] = wc.get('median_ms', 0)
+                    row[f'mps_{side}'] = r.get('megapixels_per_sec', 0)
+                    row[f'cv_{side}'] = wc.get('cv_percent', 0)
+                    row[f'category'] = r.get('category', '')
                 else:
-                    row += ' N/A | N/A |'
-                    medians.append(None)
+                    row[f'supported_{side}'] = False
+                    row[f'verified_{side}'] = False
+                    row[f'median_{side}'] = 0
+                    row[f'mps_{side}'] = 0
+                    row[f'cv_{side}'] = 0
 
-            # Speedup: baseline (second) / candidate (first) — how much faster first is
-            if len(medians) >= 2 and medians[0] and medians[1] and medians[0] > 0:
-                speedup = medians[1] / medians[0]
-                row += f' {speedup:.2f}x |'
+            if (row['median_a'] > 0 and row['median_b'] > 0
+                    and row['verified_a'] and row['verified_b']):
+                row['speedup'] = row['mps_b'] / row['mps_a'] if row['mps_a'] > 0 else 0
             else:
-                row += ' N/A |'
+                row['speedup'] = 0
 
-            f.write(row + '\n')
+            comparison_rows.append(row)
+
+        comparison_rows.sort(key=lambda r: r.get('speedup', 0))
+
+        # --- Summary ---
+        both_verified = sum(1 for r in comparison_rows if r['verified_a'] and r['verified_b'])
+        a_only = sum(1 for r in comparison_rows if r['verified_a'] and not r['verified_b'])
+        b_only = sum(1 for r in comparison_rows if not r['verified_a'] and r['verified_b'])
+
+        keys_a = set(result_maps[0].keys())
+        keys_b = set(result_maps[1].keys())
+        only_a_keys = sorted(keys_a - keys_b)
+        only_b_keys = sorted(keys_b - keys_a)
+
+        f.write('## Summary\n\n')
+        f.write('| Metric | Count |\n')
+        f.write('|:---|---:|\n')
+        f.write(f'| Total benchmarks compared | {len(comparison_rows)} |\n')
+        f.write(f'| Both verified | {both_verified} |\n')
+        if a_only > 0:
+            f.write(f'| Verified only in {impl_names[0]} | {a_only} |\n')
+        if b_only > 0:
+            f.write(f'| Verified only in {impl_names[1]} | {b_only} |\n')
+        if only_a_keys:
+            f.write(f'| Only in {impl_names[0]} | {len(only_a_keys)} |\n')
+        if only_b_keys:
+            f.write(f'| Only in {impl_names[1]} | {len(only_b_keys)} |\n')
+        f.write('\n')
+
+        # --- Detailed Results ---
+        f.write('## Detailed Comparison\n\n')
+        f.write(f'> Speedup = {impl_names[1]} throughput / {impl_names[0]} throughput. '
+                f'Values >1.00 mean {impl_names[1]} is faster.\n\n')
+        f.write(f'| Benchmark | Mode | Resolution '
+                f'| {impl_names[0]} (ms) | {impl_names[0]} (MP/s) | {impl_names[0]} Verified '
+                f'| {impl_names[1]} (ms) | {impl_names[1]} (MP/s) | {impl_names[1]} Verified '
+                f'| Speedup |\n')
+        f.write('|:---|:---|:---|---:|---:|:---:|---:|---:|:---:|---:|\n')
+
+        has_unstable = False
+        for row in comparison_rows:
+            flag = ''
+            if row['cv_a'] > 15 or row['cv_b'] > 15:
+                flag = ' *'
+                has_unstable = True
+
+            f.write(f'| {row["name"]} | {row["mode"]} | {row["resolution"]} | ')
+
+            if not row['supported_a']:
+                f.write('N/A | N/A | N/A | ')
+            else:
+                v = 'PASS' if row['verified_a'] else 'FAIL'
+                f.write(f'{row["median_a"]:.3f} | {row["mps_a"]:.1f} | {v} | ')
+
+            if not row['supported_b']:
+                f.write('N/A | N/A | N/A | ')
+            else:
+                v = 'PASS' if row['verified_b'] else 'FAIL'
+                f.write(f'{row["median_b"]:.3f} | {row["mps_b"]:.1f} | {v} | ')
+
+            if row['speedup'] > 0:
+                f.write(f'{row["speedup"]:.2f}x{flag}')
+            else:
+                f.write('N/A')
+            f.write(' |\n')
+        f.write('\n')
+
+        if has_unstable:
+            f.write('> \\* High variability (CV% > 15%) — comparison may not be reliable for these benchmarks. '
+                    'Consider increasing iterations.\n\n')
+
+        # --- Benchmarks Only In One Report ---
+        keys_a = set(result_maps[0].keys())
+        keys_b = set(result_maps[1].keys())
+        only_a = sorted(keys_a - keys_b)
+        only_b = sorted(keys_b - keys_a)
+
+        if only_a or only_b:
+            f.write('## Benchmarks Only In One Report\n\n')
+            if only_a:
+                f.write(f'### Only in {impl_names[0]}\n\n')
+                f.write('| Benchmark | Mode | Resolution |\n')
+                f.write('|:---|:---|:---|\n')
+                for name, mode, res in only_a:
+                    f.write(f'| {name} | {mode} | {res} |\n')
+                f.write('\n')
+            if only_b:
+                f.write(f'### Only in {impl_names[1]}\n\n')
+                f.write('| Benchmark | Mode | Resolution |\n')
+                f.write('|:---|:---|:---|\n')
+                for name, mode, res in only_b:
+                    f.write(f'| {name} | {mode} | {res} |\n')
+                f.write('\n')
+
+        # --- Conformance Detail ---
+        missing_a = conformance_info[0].get('missing', [])
+        missing_b = conformance_info[1].get('missing', [])
+        if missing_a or missing_b:
+            f.write('## Missing Kernels\n\n')
+            f.write(f'| Implementation | Missing Kernels |\n')
+            f.write(f'|:---|:---|\n')
+            if missing_a:
+                f.write(f'| {impl_names[0]} | {", ".join(missing_a)} |\n')
+            if missing_b:
+                f.write(f'| {impl_names[1]} | {", ".join(missing_b)} |\n')
+            f.write('\n')
 
     print(f'  Comparison markdown: {output_path}.md')
 
 
-def write_csv(impl_names, result_maps, all_keys, output_path):
+def write_csv(impl_names, result_maps, all_keys, output_path, reports):
     with open(output_path + '.csv', 'w') as f:
-        header = 'benchmark,mode,resolution'
-        for name in impl_names:
-            header += f',{name}_median_ms,{name}_mp_per_sec'
+        header = f'benchmark,category,mode,resolution'
+        header += f',{impl_names[0]}_median_ms,{impl_names[0]}_mp_per_sec,{impl_names[0]}_verified'
+        header += f',{impl_names[1]}_median_ms,{impl_names[1]}_mp_per_sec,{impl_names[1]}_verified'
         header += ',speedup'
         f.write(header + '\n')
 
-        for key in all_keys:
+        for key in sorted(all_keys):
             name, mode, resolution = key
-            row = f'{name},{mode},{resolution}'
+            r_a = result_maps[0].get(key)
+            r_b = result_maps[1].get(key)
 
-            medians = []
-            for rm in result_maps:
-                r = rm.get(key)
-                if r and r.get('supported', False) and r.get('verified', True):
-                    wc = r.get('wall_clock', {})
-                    median = wc.get('median_ms', 0)
-                    mps = r.get('megapixels_per_sec', 0)
-                    row += f',{median:.4f},{mps:.2f}'
-                    medians.append(median)
-                else:
-                    row += ',,'
-                    medians.append(None)
+            if not r_a and not r_b:
+                continue
 
-            if len(medians) >= 2 and medians[0] and medians[1] and medians[0] > 0:
-                row += f',{medians[1]/medians[0]:.4f}'
-            else:
-                row += ','
+            category = ''
+            cols_a = ',,'
+            cols_b = ',,'
+            verified_a = False
+            verified_b = False
+            mps_a = 0
+            mps_b = 0
 
-            f.write(row + '\n')
+            if r_a and r_a.get('supported', False):
+                category = r_a.get('category', '')
+                wc = r_a.get('wall_clock', {})
+                median = wc.get('median_ms', 0)
+                mps_a = r_a.get('megapixels_per_sec', 0)
+                verified_a = r_a.get('verified', True)
+                cols_a = f'{median:.4f},{mps_a:.2f},{"PASS" if verified_a else "FAIL"}'
+
+            if r_b and r_b.get('supported', False):
+                if not category:
+                    category = r_b.get('category', '')
+                wc = r_b.get('wall_clock', {})
+                median = wc.get('median_ms', 0)
+                mps_b = r_b.get('megapixels_per_sec', 0)
+                verified_b = r_b.get('verified', True)
+                cols_b = f'{median:.4f},{mps_b:.2f},{"PASS" if verified_b else "FAIL"}'
+
+            speedup = ''
+            if verified_a and verified_b and mps_a > 0:
+                speedup = f'{mps_b / mps_a:.4f}'
+
+            f.write(f'{name},{category},{mode},{resolution},{cols_a},{cols_b},{speedup}\n')
 
     print(f'  Comparison CSV: {output_path}.csv')
 
@@ -238,8 +402,8 @@ def main():
 
     impl_names, result_maps, all_keys, system_infos = compare(reports, args.reports)
 
-    write_markdown(impl_names, result_maps, all_keys, args.output, system_infos)
-    write_csv(impl_names, result_maps, all_keys, args.output)
+    write_markdown(impl_names, result_maps, all_keys, args.output, reports, system_infos)
+    write_csv(impl_names, result_maps, all_keys, args.output, reports)
 
     print(f'\nCompared {len(args.reports)} implementations across {len(all_keys)} benchmarks')
 

@@ -33,6 +33,10 @@ struct BenchmarkCase {
         vx_context ctx, uint32_t width, uint32_t height,
         TestDataGenerator& gen, ResourceTracker& tracker)>;
     ImmediateFn immediate_func;
+
+    // Output verification: runs kernel on small known input, checks correctness
+    using VerifyFn = std::function<bool(vx_context ctx)>;
+    VerifyFn verify_fn;
 };
 
 class BenchmarkRunner {
