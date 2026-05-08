@@ -19,6 +19,10 @@ openvx-mark works with any conformant OpenVX implementation — AMD OpenVX (MIVi
 - **Baseline comparison** — compare JSON reports across runs or vendors
 - **Reports** — JSON, CSV, and Markdown output with glossary
 
+## Important
+
+It is recommended that the OpenVX implementation first passes the [Khronos OpenVX Conformance Test Suite](https://github.com/KhronosGroup/OpenVX-cts) before running openvx-mark. Benchmarking results are only meaningful when the underlying implementation is conformant — non-conformant implementations may produce incorrect outputs, which will be flagged by openvx-mark's output verification and excluded from composite scores.
+
 ## Prerequisites
 
 - C++17 compiler
