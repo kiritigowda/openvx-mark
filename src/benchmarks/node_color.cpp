@@ -90,8 +90,9 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
                 return true;
             }
             auto result = verify::readImage(out, 64, 64);
-            // RGB(200,100,50) → Y ≈ 0.299*200 + 0.587*100 + 0.114*50 ≈ 124
-            bool ok = !result.empty() && (std::abs((int)result[32 * 64 + 32] - 124) <= 5);
+            uint8_t val = result[32 * 64 + 32];
+            // Y depends on color space (BT.601→124, BT.709→117); accept both
+            bool ok = !result.empty() && val >= 115 && val <= 130;
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
@@ -154,8 +155,9 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
                 return true;
             }
             auto result = verify::readImage(out, 64, 64);
-            // RGB(200,100,50) → Y ≈ 124
-            bool ok = !result.empty() && (std::abs((int)result[32 * 64 + 32] - 124) <= 5);
+            uint8_t val = result[32 * 64 + 32];
+            // Y depends on color space (BT.601→124, BT.709→117); accept both
+            bool ok = !result.empty() && val >= 115 && val <= 130;
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
