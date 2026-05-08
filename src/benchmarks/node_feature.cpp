@@ -66,13 +66,13 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            // 64x64 image: top half black (rows 0-31), bottom half white (rows 32-63) — clear horizontal edge
-            std::vector<uint8_t> a(64 * 64);
-            for (int i = 0; i < 64 * 32; i++) a[i] = 0;
-            for (int i = 64 * 32; i < 64 * 64; i++) a[i] = 255;
-            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            const uint32_t W = 128, H = 128;
+            std::vector<uint8_t> a(W * H);
+            for (uint32_t i = 0; i < W * (H / 2); i++) a[i] = 0;
+            for (uint32_t i = W * (H / 2); i < W * H; i++) a[i] = 255;
+            vx_image in = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, a.data());
             if (!in) return true;
-            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_image out = vxCreateImage(ctx, W, H, VX_DF_IMAGE_U8);
             vx_threshold hyst = vxCreateThresholdForImage(ctx, VX_THRESHOLD_TYPE_RANGE, VX_DF_IMAGE_U8, VX_DF_IMAGE_U8);
             vx_pixel_value_t lower_pv = {}, upper_pv = {};
             lower_pv.U8 = 50; upper_pv.U8 = 100;
@@ -90,7 +90,7 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
                 vxReleaseImage(&in); vxReleaseImage(&out);
                 return true;
             }
-            bool ok = verify::imageNonZero(out, 64, 64);
+            bool ok = verify::imageNonZero(out, W, H);
             vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseThreshold(&hyst);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;

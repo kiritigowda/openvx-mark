@@ -66,7 +66,6 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
             const int N = 64 * 64;
-            // 64x64 RGB image: R=200, G=100, B=50 per pixel
             std::vector<uint8_t> rgb(N * 3);
             for (int i = 0; i < N; i++) {
                 rgb[i * 3 + 0] = 200;
@@ -76,14 +75,23 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_RGB, rgb.data());
             if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_IYUV);
-            vx_status status = vxuColorConvert(ctx, in, out);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = vxColorConvertNode(g, in, out);
+            if (vxVerifyGraph(g) != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            vx_status status = vxProcessGraph(g);
             if (status != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g);
                 vxReleaseImage(&in); vxReleaseImage(&out);
                 return true;
             }
             // Y ~ 0.299*200 + 0.587*100 + 0.114*50 ~ 124
             auto result = verify::readImage(out, 64, 64);
             bool ok = (result[0] >= 119 && result[0] <= 129);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
         };
@@ -122,7 +130,6 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
             const int N = 64 * 64;
-            // 64x64 RGB image: R=200, G=100, B=50 per pixel
             std::vector<uint8_t> rgb(N * 3);
             for (int i = 0; i < N; i++) {
                 rgb[i * 3 + 0] = 200;
@@ -132,14 +139,23 @@ std::vector<BenchmarkCase> registerColorBenchmarks() {
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_RGB, rgb.data());
             if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_NV12);
-            vx_status status = vxuColorConvert(ctx, in, out);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = vxColorConvertNode(g, in, out);
+            if (vxVerifyGraph(g) != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            vx_status status = vxProcessGraph(g);
             if (status != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g);
                 vxReleaseImage(&in); vxReleaseImage(&out);
                 return true;
             }
             // Y ~ 0.299*200 + 0.587*100 + 0.114*50 ~ 124
             auto result = verify::readImage(out, 64, 64);
             bool ok = (result[0] >= 119 && result[0] <= 129);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
         };

@@ -126,17 +126,24 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
             std::vector<uint8_t> a(64 * 64, 100);
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
             if (!in) return true;
-            // Laplacian pyramid with 1 level, remainder is 64/2 = 32x32
             vx_pyramid lap = vxCreatePyramid(ctx, 1, VX_SCALE_PYRAMID_HALF, 64, 64, VX_DF_IMAGE_S16);
             vx_image remainder = vxCreateImage(ctx, 32, 32, VX_DF_IMAGE_U8);
-            vx_status status = vxuLaplacianPyramid(ctx, in, lap, remainder);
-            if (status != VX_SUCCESS) {
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = vxLaplacianPyramidNode(g, in, lap, remainder);
+            if (vxVerifyGraph(g) != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g);
                 vxReleaseImage(&remainder); vxReleasePyramid(&lap); vxReleaseImage(&in);
                 return true;
             }
-            // For uniform input, remainder should be close to 100
+            vx_status status = vxProcessGraph(g);
+            if (status != VX_SUCCESS) {
+                vxReleaseNode(&n); vxReleaseGraph(&g);
+                vxReleaseImage(&remainder); vxReleasePyramid(&lap); vxReleaseImage(&in);
+                return true;
+            }
             auto result = verify::readImage(remainder, 32, 32);
             bool ok = (std::abs((int)result[0] - 100) <= 5);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseImage(&remainder); vxReleasePyramid(&lap); vxReleaseImage(&in);
             return ok;
         };
