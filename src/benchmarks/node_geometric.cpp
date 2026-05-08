@@ -25,6 +25,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "benchmark_runner.h"
+#include "openvx_version.h"
 #include "verify_utils.h"
 #include <VX/vx.h>
 #include <VX/vx_nodes.h>
@@ -247,6 +248,11 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
             if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
             vx_remap remap = vxCreateRemap(ctx, 64, 64, 64, 64);
+#if OPENVX_USE_SET_REMAP_POINT
+            for (vx_uint32 y = 0; y < 64; y++)
+                for (vx_uint32 x = 0; x < 64; x++)
+                    vxSetRemapPoint(remap, x, y, (vx_float32)x, (vx_float32)y);
+#else
             vx_rectangle_t rect = {0, 0, 64, 64};
             vx_size stride = 64 * sizeof(vx_coordinates2df_t);
             std::vector<vx_coordinates2df_t> coords(64 * 64);
@@ -257,6 +263,7 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
                 }
             vxCopyRemapPatch(remap, &rect, stride, coords.data(),
                              VX_TYPE_COORDINATES2DF, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+#endif
             vx_status status = vxuRemap(ctx, in, remap, VX_INTERPOLATION_BILINEAR, out);
             if (status != VX_SUCCESS) {
                 vxReleaseRemap(&remap);

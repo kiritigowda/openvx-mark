@@ -26,6 +26,7 @@
 
 #include "benchmark_runner.h"
 #include "benchmark_config.h"
+#include "openvx_version.h"
 #include "verify_utils.h"
 #include <VX/vx.h>
 #include <VX/vxu.h>

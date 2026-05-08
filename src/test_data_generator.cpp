@@ -1,4 +1,5 @@
 #include "test_data_generator.h"
+#include "openvx_version.h"
 #include <VX/vx_compatibility.h>
 #include <cstring>
 #include <vector>
@@ -171,18 +172,29 @@ vx_remap TestDataGenerator::createRemap(vx_context ctx, uint32_t src_w, uint32_t
                                         uint32_t dst_w, uint32_t dst_h) {
     vx_remap remap = vxCreateRemap(ctx, src_w, src_h, dst_w, dst_h);
 
-    // Build identity mapping data and copy via vxCopyRemapPatch
-    vx_rectangle_t rect = {0, 0, dst_w, dst_h};
-    vx_size stride = dst_w * sizeof(vx_coordinates2df_t);
-    std::vector<vx_coordinates2df_t> coords(dst_w * dst_h);
+#if OPENVX_USE_SET_REMAP_POINT
     for (vx_uint32 y = 0; y < dst_h; y++) {
         for (vx_uint32 x = 0; x < dst_w; x++) {
-            coords[y * dst_w + x].x = static_cast<vx_float32>(x * src_w) / static_cast<vx_float32>(dst_w);
-            coords[y * dst_w + x].y = static_cast<vx_float32>(y * src_h) / static_cast<vx_float32>(dst_h);
+            vx_float32 sx = static_cast<vx_float32>(x * src_w) / static_cast<vx_float32>(dst_w);
+            vx_float32 sy = static_cast<vx_float32>(y * src_h) / static_cast<vx_float32>(dst_h);
+            vxSetRemapPoint(remap, x, y, sx, sy);
         }
     }
-    vxCopyRemapPatch(remap, &rect, stride, coords.data(),
-                     VX_TYPE_COORDINATES2DF, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+#else
+    {
+        vx_rectangle_t rect = {0, 0, dst_w, dst_h};
+        vx_size stride = dst_w * sizeof(vx_coordinates2df_t);
+        std::vector<vx_coordinates2df_t> coords(dst_w * dst_h);
+        for (vx_uint32 y = 0; y < dst_h; y++) {
+            for (vx_uint32 x = 0; x < dst_w; x++) {
+                coords[y * dst_w + x].x = static_cast<vx_float32>(x * src_w) / static_cast<vx_float32>(dst_w);
+                coords[y * dst_w + x].y = static_cast<vx_float32>(y * src_h) / static_cast<vx_float32>(dst_h);
+            }
+        }
+        vxCopyRemapPatch(remap, &rect, stride, coords.data(),
+                         VX_TYPE_COORDINATES2DF, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+    }
+#endif
     return remap;
 }
 
