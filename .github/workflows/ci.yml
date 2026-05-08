@@ -174,14 +174,17 @@ jobs:
           cd /tmp/tiovx
 
           # Create stub headers for missing TI SDK dependencies
-          mkdir -p stubs
+          # Stubs mirror the include paths used by TIOVX source files
+          mkdir -p stubs/utils/mem/include
+          mkdir -p stubs/utils/perf_stats/include
+
           cat > stubs/app_mem_map.h << 'STUB_EOF'
           #ifndef APP_MEM_MAP_H
           #define APP_MEM_MAP_H
+          #define TIOVX_OBJ_DESC_MEM_SIZE (128U * 1024U * 1024U)
           #endif
           STUB_EOF
 
-          mkdir -p stubs/utils/perf_stats/include
           cat > stubs/utils/perf_stats/include/app_perf_stats.h << 'STUB_EOF'
           #ifndef APP_PERF_STATS_H
           #define APP_PERF_STATS_H
@@ -191,21 +194,38 @@ jobs:
           #endif
           STUB_EOF
 
-          cat > stubs/app_mem.h << 'STUB_EOF'
+          # tivx_mem.c includes <utils/mem/include/app_mem.h>
+          cat > stubs/utils/mem/include/app_mem.h << 'STUB_EOF'
           #ifndef APP_MEM_H
           #define APP_MEM_H
           #include <stdlib.h>
-          static inline void *appMemAlloc(unsigned int heap_id, unsigned int size, unsigned int align) {
+          #include <stdint.h>
+          static inline void *appMemAlloc(uint32_t heap_id, uint32_t size, uint32_t align) {
               (void)heap_id; (void)align;
               return malloc(size);
           }
-          static inline int appMemFree(unsigned int heap_id, void *ptr, unsigned int size) {
+          static inline int32_t appMemFree(uint32_t heap_id, void *ptr, uint32_t size) {
               (void)heap_id; (void)size;
               free(ptr);
               return 0;
           }
+          static inline uint64_t appMemGetVirt2PhyBufPtr(uint64_t virt, uint32_t heap_id) {
+              (void)heap_id;
+              return virt;
+          }
+          static inline void *appMemMap(void *phys_ptr, uint32_t size) {
+              (void)size;
+              return phys_ptr;
+          }
+          static inline int32_t appMemUnMap(void *virt_ptr, uint32_t size) {
+              (void)virt_ptr; (void)size;
+              return 0;
+          }
           #endif
           STUB_EOF
+
+          # Also place app_mem.h at stubs/ for any direct includes
+          cp stubs/utils/mem/include/app_mem.h stubs/app_mem.h
 
           cat > stubs/app_init.h << 'STUB_EOF'
           #ifndef APP_INIT_H
