@@ -189,87 +189,78 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, reports, syst
                 f.write(f'| {display} | {a_val:.2f} | {b_val:.2f} | {sign}{change:.1f} |\n')
             f.write('\n')
 
-        # --- Summary ---
-        regressions = 0
-        improvements = 0
-        same_count = 0
-        cat_regressions = {}
-        cat_improvements = {}
-
+        # --- Build comparison rows (include all results, not just verified) ---
         comparison_rows = []
         for key in all_keys:
             name, mode, resolution = key
             r_a = result_maps[0].get(key)
             r_b = result_maps[1].get(key)
 
-            if not (r_a and r_b):
-                continue
-            if not (r_a.get('supported', False) and r_b.get('supported', False)):
-                continue
-            if not (r_a.get('verified', True) and r_b.get('verified', True)):
+            if not r_a and not r_b:
                 continue
 
-            wc_a = r_a.get('wall_clock', {})
-            wc_b = r_b.get('wall_clock', {})
-            median_a = wc_a.get('median_ms', 0)
-            median_b = wc_b.get('median_ms', 0)
-            if median_a <= 0 or median_b <= 0:
-                continue
+            row = {'name': name, 'mode': mode, 'resolution': resolution}
 
-            mps_a = r_a.get('megapixels_per_sec', 0)
-            mps_b = r_b.get('megapixels_per_sec', 0)
-            cv_a = wc_a.get('cv_percent', 0)
-            cv_b = wc_b.get('cv_percent', 0)
-            category = r_a.get('category', '')
-            change_pct = ((median_b - median_a) / median_a) * 100
+            for side, r in [('a', r_a), ('b', r_b)]:
+                if r:
+                    row[f'supported_{side}'] = r.get('supported', False)
+                    row[f'verified_{side}'] = r.get('verified', True) if r.get('supported', False) else False
+                    wc = r.get('wall_clock', {})
+                    row[f'median_{side}'] = wc.get('median_ms', 0)
+                    row[f'mps_{side}'] = r.get('megapixels_per_sec', 0)
+                    row[f'cv_{side}'] = wc.get('cv_percent', 0)
+                    row[f'category'] = r.get('category', '')
+                else:
+                    row[f'supported_{side}'] = False
+                    row[f'verified_{side}'] = False
+                    row[f'median_{side}'] = 0
+                    row[f'mps_{side}'] = 0
+                    row[f'cv_{side}'] = 0
 
-            if change_pct > 5.0:
-                status = 'REGRESSION'
-                regressions += 1
-                cat_regressions[category] = cat_regressions.get(category, 0) + 1
-            elif change_pct < -5.0:
-                status = 'IMPROVEMENT'
-                improvements += 1
-                cat_improvements[category] = cat_improvements.get(category, 0) + 1
+            if (row['median_a'] > 0 and row['median_b'] > 0
+                    and row['verified_a'] and row['verified_b']):
+                row['speedup'] = row['mps_b'] / row['mps_a'] if row['mps_a'] > 0 else 0
             else:
-                status = 'same'
-                same_count += 1
+                row['speedup'] = 0
 
-            comparison_rows.append({
-                'name': name, 'category': category, 'mode': mode, 'resolution': resolution,
-                'median_a': median_a, 'median_b': median_b,
-                'mps_a': mps_a, 'mps_b': mps_b,
-                'cv_a': cv_a, 'cv_b': cv_b,
-                'change_pct': change_pct, 'status': status
-            })
+            comparison_rows.append(row)
 
-        comparison_rows.sort(key=lambda r: r['change_pct'], reverse=True)
+        comparison_rows.sort(key=lambda r: r.get('speedup', 0))
+
+        # --- Summary ---
+        both_verified = sum(1 for r in comparison_rows if r['verified_a'] and r['verified_b'])
+        a_only = sum(1 for r in comparison_rows if r['verified_a'] and not r['verified_b'])
+        b_only = sum(1 for r in comparison_rows if not r['verified_a'] and r['verified_b'])
+
+        keys_a = set(result_maps[0].keys())
+        keys_b = set(result_maps[1].keys())
+        only_a_keys = sorted(keys_a - keys_b)
+        only_b_keys = sorted(keys_b - keys_a)
 
         f.write('## Summary\n\n')
         f.write('| Metric | Count |\n')
         f.write('|:---|---:|\n')
-        f.write(f'| Total compared | {len(comparison_rows)} |\n')
-        f.write(f'| Regressions (>5% slower) | {regressions} |\n')
-        f.write(f'| Improvements (>5% faster) | {improvements} |\n')
-        f.write(f'| Unchanged | {same_count} |\n\n')
-
-        if cat_regressions or cat_improvements:
-            f.write('### By Category\n\n')
-            f.write('| Category | Regressions | Improvements |\n')
-            f.write('|:---|---:|---:|\n')
-            all_summary_cats = sorted(set(list(cat_regressions.keys()) + list(cat_improvements.keys())))
-            for cat in all_summary_cats:
-                reg = cat_regressions.get(cat, 0)
-                imp = cat_improvements.get(cat, 0)
-                f.write(f'| {cat} | {reg} | {imp} |\n')
-            f.write('\n')
+        f.write(f'| Total benchmarks compared | {len(comparison_rows)} |\n')
+        f.write(f'| Both verified | {both_verified} |\n')
+        if a_only > 0:
+            f.write(f'| Verified only in {impl_names[0]} | {a_only} |\n')
+        if b_only > 0:
+            f.write(f'| Verified only in {impl_names[1]} | {b_only} |\n')
+        if only_a_keys:
+            f.write(f'| Only in {impl_names[0]} | {len(only_a_keys)} |\n')
+        if only_b_keys:
+            f.write(f'| Only in {impl_names[1]} | {len(only_b_keys)} |\n')
+        f.write('\n')
 
         # --- Detailed Results ---
         f.write('## Detailed Comparison\n\n')
-        f.write(f'> Change % is based on median latency. Positive = slower (regression), negative = faster (improvement).\n\n')
-        f.write(f'| Benchmark | Mode | Resolution | {impl_names[0]} (ms) | {impl_names[0]} (MP/s) | '
-                f'{impl_names[1]} (ms) | {impl_names[1]} (MP/s) | Change % | Status |\n')
-        f.write('|:---|:---|:---|---:|---:|---:|---:|---:|:---|\n')
+        f.write(f'> Speedup = {impl_names[1]} throughput / {impl_names[0]} throughput. '
+                f'Values >1.00 mean {impl_names[1]} is faster.\n\n')
+        f.write(f'| Benchmark | Mode | Resolution '
+                f'| {impl_names[0]} (ms) | {impl_names[0]} (MP/s) | {impl_names[0]} Verified '
+                f'| {impl_names[1]} (ms) | {impl_names[1]} (MP/s) | {impl_names[1]} Verified '
+                f'| Speedup |\n')
+        f.write('|:---|:---|:---|---:|---:|:---:|---:|---:|:---:|---:|\n')
 
         has_unstable = False
         for row in comparison_rows:
@@ -277,11 +268,26 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, reports, syst
             if row['cv_a'] > 15 or row['cv_b'] > 15:
                 flag = ' *'
                 has_unstable = True
-            sign = '+' if row['change_pct'] >= 0 else ''
-            f.write(f'| {row["name"]} | {row["mode"]} | {row["resolution"]} '
-                    f'| {row["median_a"]:.3f} | {row["mps_a"]:.1f} '
-                    f'| {row["median_b"]:.3f} | {row["mps_b"]:.1f} '
-                    f'| {sign}{row["change_pct"]:.1f} | {row["status"]}{flag} |\n')
+
+            f.write(f'| {row["name"]} | {row["mode"]} | {row["resolution"]} | ')
+
+            if not row['supported_a']:
+                f.write('N/A | N/A | N/A | ')
+            else:
+                v = 'PASS' if row['verified_a'] else 'FAIL'
+                f.write(f'{row["median_a"]:.3f} | {row["mps_a"]:.1f} | {v} | ')
+
+            if not row['supported_b']:
+                f.write('N/A | N/A | N/A | ')
+            else:
+                v = 'PASS' if row['verified_b'] else 'FAIL'
+                f.write(f'{row["median_b"]:.3f} | {row["mps_b"]:.1f} | {v} | ')
+
+            if row['speedup'] > 0:
+                f.write(f'{row["speedup"]:.2f}x{flag}')
+            else:
+                f.write('N/A')
+            f.write(' |\n')
         f.write('\n')
 
         if has_unstable:
@@ -330,46 +336,49 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, reports, syst
 def write_csv(impl_names, result_maps, all_keys, output_path, reports):
     with open(output_path + '.csv', 'w') as f:
         header = f'benchmark,category,mode,resolution'
-        header += f',{impl_names[0]}_median_ms,{impl_names[0]}_mp_per_sec'
-        header += f',{impl_names[1]}_median_ms,{impl_names[1]}_mp_per_sec'
-        header += ',change_percent,status'
+        header += f',{impl_names[0]}_median_ms,{impl_names[0]}_mp_per_sec,{impl_names[0]}_verified'
+        header += f',{impl_names[1]}_median_ms,{impl_names[1]}_mp_per_sec,{impl_names[1]}_verified'
+        header += ',speedup'
         f.write(header + '\n')
 
-        for key in all_keys:
+        for key in sorted(all_keys):
             name, mode, resolution = key
             r_a = result_maps[0].get(key)
             r_b = result_maps[1].get(key)
 
-            if not (r_a and r_b):
-                continue
-            if not (r_a.get('supported', False) and r_b.get('supported', False)):
-                continue
-            if not (r_a.get('verified', True) and r_b.get('verified', True)):
+            if not r_a and not r_b:
                 continue
 
-            wc_a = r_a.get('wall_clock', {})
-            wc_b = r_b.get('wall_clock', {})
-            median_a = wc_a.get('median_ms', 0)
-            median_b = wc_b.get('median_ms', 0)
-            if median_a <= 0 or median_b <= 0:
-                continue
+            category = ''
+            cols_a = ',,'
+            cols_b = ',,'
+            verified_a = False
+            verified_b = False
+            mps_a = 0
+            mps_b = 0
 
-            mps_a = r_a.get('megapixels_per_sec', 0)
-            mps_b = r_b.get('megapixels_per_sec', 0)
-            category = r_a.get('category', '')
-            change_pct = ((median_b - median_a) / median_a) * 100
+            if r_a and r_a.get('supported', False):
+                category = r_a.get('category', '')
+                wc = r_a.get('wall_clock', {})
+                median = wc.get('median_ms', 0)
+                mps_a = r_a.get('megapixels_per_sec', 0)
+                verified_a = r_a.get('verified', True)
+                cols_a = f'{median:.4f},{mps_a:.2f},{"PASS" if verified_a else "FAIL"}'
 
-            if change_pct > 5.0:
-                status = 'REGRESSION'
-            elif change_pct < -5.0:
-                status = 'IMPROVEMENT'
-            else:
-                status = 'same'
+            if r_b and r_b.get('supported', False):
+                if not category:
+                    category = r_b.get('category', '')
+                wc = r_b.get('wall_clock', {})
+                median = wc.get('median_ms', 0)
+                mps_b = r_b.get('megapixels_per_sec', 0)
+                verified_b = r_b.get('verified', True)
+                cols_b = f'{median:.4f},{mps_b:.2f},{"PASS" if verified_b else "FAIL"}'
 
-            f.write(f'{name},{category},{mode},{resolution},'
-                    f'{median_a:.4f},{mps_a:.2f},'
-                    f'{median_b:.4f},{mps_b:.2f},'
-                    f'{change_pct:.2f},{status}\n')
+            speedup = ''
+            if verified_a and verified_b and mps_a > 0:
+                speedup = f'{mps_b / mps_a:.4f}'
+
+            f.write(f'{name},{category},{mode},{resolution},{cols_a},{cols_b},{speedup}\n')
 
     print(f'  Comparison CSV: {output_path}.csv')
 

@@ -1047,8 +1047,11 @@ struct ComparisonEntry {
     double current_mps = 0;
     double baseline_cv = 0;
     double current_cv = 0;
-    double change_percent = 0;
-    std::string status;
+    double speedup = 0;
+    bool baseline_verified = false;
+    bool current_verified = false;
+    bool baseline_supported = false;
+    bool current_supported = false;
 };
 
 void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
@@ -1103,30 +1106,25 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
         std::map<std::string, ParsedResult> map;
         for (const auto& obj : objs) {
             ParsedResult pr;
-            pr.supported = !extractJsonBool(obj, "supported", true) ? false : true;
             pr.supported = !(obj.find("\"supported\": false") != std::string::npos ||
                              obj.find("\"supported\":false") != std::string::npos);
             pr.verified = !(obj.find("\"verified\": false") != std::string::npos ||
                             obj.find("\"verified\":false") != std::string::npos);
-
-            if (!pr.supported || !pr.verified) continue;
 
             pr.name = extractJsonString(obj, "name");
             pr.category = extractJsonString(obj, "category");
             pr.mode = extractJsonString(obj, "mode");
             pr.resolution = extractJsonString(obj, "resolution");
 
+            if (pr.name.empty()) continue;
+
             size_t wc_pos = obj.find("\"wall_clock\"");
             if (wc_pos != std::string::npos) {
                 std::string wc_section = obj.substr(wc_pos);
                 pr.median_ms = extractJsonNumber(wc_section, "median_ms");
                 pr.cv_percent = extractJsonNumber(wc_section, "cv_percent");
-            } else {
-                continue;
             }
             pr.mps = extractJsonNumber(obj, "megapixels_per_sec");
-
-            if (pr.name.empty() || pr.median_ms <= 0) continue;
 
             std::string key = pr.name + "|" + pr.mode + "|" + pr.resolution;
             map[key] = pr;
@@ -1137,19 +1135,32 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
     auto baseline_map = parseResults(baseline_objs);
     auto current_map = parseResults(current_objs);
 
-    // Match and compare
+    // Match and compare — collect all keys from both maps
+    std::set<std::string> all_keys;
+    for (const auto& [key, _] : baseline_map) all_keys.insert(key);
+    for (const auto& [key, _] : current_map) all_keys.insert(key);
+
     std::vector<ComparisonEntry> comparisons;
-    int regressions = 0, improvements = 0, same_count = 0;
-    std::map<std::string, int> cat_regressions, cat_improvements;
+    std::vector<std::string> only_in_baseline, only_in_current;
 
-    for (const auto& [key, curr] : current_map) {
-        auto it = baseline_map.find(key);
-        if (it == baseline_map.end()) continue;
+    for (const auto& key : all_keys) {
+        auto it_a = baseline_map.find(key);
+        auto it_b = current_map.find(key);
 
-        const auto& base = it->second;
+        if (it_a != baseline_map.end() && it_b == current_map.end()) {
+            only_in_baseline.push_back(key);
+            continue;
+        }
+        if (it_a == baseline_map.end() && it_b != current_map.end()) {
+            only_in_current.push_back(key);
+            continue;
+        }
+
+        const auto& base = it_a->second;
+        const auto& curr = it_b->second;
         ComparisonEntry ce;
         ce.name = curr.name;
-        ce.category = curr.category;
+        ce.category = curr.category.empty() ? base.category : curr.category;
         ce.mode = curr.mode;
         ce.resolution = curr.resolution;
         ce.baseline_median_ms = base.median_ms;
@@ -1158,42 +1169,22 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
         ce.current_mps = curr.mps;
         ce.baseline_cv = base.cv_percent;
         ce.current_cv = curr.cv_percent;
+        ce.baseline_verified = base.verified;
+        ce.current_verified = curr.verified;
+        ce.baseline_supported = base.supported;
+        ce.current_supported = curr.supported;
 
-        if (base.median_ms > 0) {
-            ce.change_percent = ((curr.median_ms - base.median_ms) / base.median_ms) * 100.0;
-        }
-
-        if (ce.change_percent > 5.0) {
-            ce.status = "REGRESSION";
-            regressions++;
-            cat_regressions[ce.category]++;
-        } else if (ce.change_percent < -5.0) {
-            ce.status = "IMPROVEMENT";
-            improvements++;
-            cat_improvements[ce.category]++;
-        } else {
-            ce.status = "same";
-            same_count++;
+        if (base.median_ms > 0 && curr.median_ms > 0) {
+            ce.speedup = base.median_ms / curr.median_ms;
         }
 
         comparisons.push_back(ce);
     }
 
-    // Find benchmarks only in one report
-    std::vector<std::string> only_in_baseline, only_in_current;
-    for (const auto& [key, _] : baseline_map) {
-        if (current_map.find(key) == current_map.end())
-            only_in_baseline.push_back(key);
-    }
-    for (const auto& [key, _] : current_map) {
-        if (baseline_map.find(key) == baseline_map.end())
-            only_in_current.push_back(key);
-    }
-
-    // Sort by change_percent descending (worst regressions first)
+    // Sort by speedup ascending (slowest relative performance first, then fastest)
     std::sort(comparisons.begin(), comparisons.end(),
         [](const ComparisonEntry& a, const ComparisonEntry& b) {
-            return a.change_percent > b.change_percent;
+            return a.speedup < b.speedup;
         });
 
     // Write comparison markdown
@@ -1279,47 +1270,74 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
     }
 
     // --- Summary ---
+    int both_verified = 0, a_only_verified = 0, b_only_verified = 0, neither_verified = 0;
+    for (const auto& ce : comparisons) {
+        bool a_ok = ce.baseline_supported && ce.baseline_verified;
+        bool b_ok = ce.current_supported && ce.current_verified;
+        if (a_ok && b_ok) both_verified++;
+        else if (a_ok) a_only_verified++;
+        else if (b_ok) b_only_verified++;
+        else neither_verified++;
+    }
+
     f << "## Summary\n\n";
     f << "| Metric | Count |\n";
     f << "|:---|---:|\n";
-    f << "| Total compared | " << comparisons.size() << " |\n";
-    f << "| Regressions (>5% slower) | " << regressions << " |\n";
-    f << "| Improvements (>5% faster) | " << improvements << " |\n";
-    f << "| Unchanged | " << same_count << " |\n\n";
-
-    if (!cat_regressions.empty() || !cat_improvements.empty()) {
-        f << "### By Category\n\n";
-        f << "| Category | Regressions | Improvements |\n";
-        f << "|:---|---:|---:|\n";
-        std::set<std::string> summary_cats;
-        for (const auto& [c, _] : cat_regressions) summary_cats.insert(c);
-        for (const auto& [c, _] : cat_improvements) summary_cats.insert(c);
-        for (const auto& c : summary_cats) {
-            int reg = cat_regressions.count(c) ? cat_regressions[c] : 0;
-            int imp = cat_improvements.count(c) ? cat_improvements[c] : 0;
-            f << "| " << c << " | " << reg << " | " << imp << " |\n";
-        }
-        f << "\n";
-    }
+    f << "| Total benchmarks compared | " << comparisons.size() << " |\n";
+    f << "| Both verified | " << both_verified << " |\n";
+    if (a_only_verified > 0)
+        f << "| Verified only in " << name_a << " | " << a_only_verified << " |\n";
+    if (b_only_verified > 0)
+        f << "| Verified only in " << name_b << " | " << b_only_verified << " |\n";
+    if (neither_verified > 0)
+        f << "| Neither verified | " << neither_verified << " |\n";
+    if (!only_in_baseline.empty())
+        f << "| Only in " << name_a << " | " << only_in_baseline.size() << " |\n";
+    if (!only_in_current.empty())
+        f << "| Only in " << name_b << " | " << only_in_current.size() << " |\n";
+    f << "\n";
 
     // --- Detailed Results ---
     f << "## Detailed Comparison\n\n";
-    f << "> Change % is based on median latency. Positive = slower (regression), negative = faster (improvement).\n\n";
+    f << "> Speedup = " << name_b << " throughput / " << name_a
+      << " throughput. Values >1.00 mean " << name_b << " is faster.\n\n";
     f << "| Benchmark | Mode | Resolution | " << name_a << " (ms) | " << name_a << " (MP/s) | "
-      << name_b << " (ms) | " << name_b << " (MP/s) | Change % | Status |\n";
-    f << "|:---|:---|:---|---:|---:|---:|---:|---:|:---|\n";
+      << name_a << " Verified | " << name_b << " (ms) | " << name_b << " (MP/s) | "
+      << name_b << " Verified | Speedup |\n";
+    f << "|:---|:---|:---|---:|---:|:---:|---:|---:|:---:|---:|\n";
 
     for (const auto& ce : comparisons) {
         std::string flag;
         if (ce.baseline_cv > 15.0 || ce.current_cv > 15.0) flag = " *";
-        f << "| " << ce.name << " | " << ce.mode << " | " << ce.resolution
-          << " | " << std::fixed << std::setprecision(3) << ce.baseline_median_ms
-          << " | " << std::setprecision(1) << ce.baseline_mps
-          << " | " << std::setprecision(3) << ce.current_median_ms
-          << " | " << std::setprecision(1) << ce.current_mps
-          << " | " << std::setprecision(1)
-          << (ce.change_percent >= 0 ? "+" : "") << ce.change_percent
-          << " | " << ce.status << flag << " |\n";
+
+        f << "| " << ce.name << " | " << ce.mode << " | " << ce.resolution << " | ";
+
+        // Baseline columns
+        if (!ce.baseline_supported) {
+            f << "N/A | N/A | N/A | ";
+        } else {
+            f << std::fixed << std::setprecision(3) << ce.baseline_median_ms
+              << " | " << std::setprecision(1) << ce.baseline_mps
+              << " | " << (ce.baseline_verified ? "PASS" : "FAIL") << " | ";
+        }
+
+        // Current columns
+        if (!ce.current_supported) {
+            f << "N/A | N/A | N/A | ";
+        } else {
+            f << std::fixed << std::setprecision(3) << ce.current_median_ms
+              << " | " << std::setprecision(1) << ce.current_mps
+              << " | " << (ce.current_verified ? "PASS" : "FAIL") << " | ";
+        }
+
+        // Speedup
+        if (ce.speedup > 0 && ce.baseline_supported && ce.current_supported
+            && ce.baseline_verified && ce.current_verified) {
+            f << std::setprecision(2) << ce.speedup << "x" << flag;
+        } else {
+            f << "N/A";
+        }
+        f << " |\n";
     }
     f << "\n";
 
@@ -1363,25 +1381,39 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
     }
 
     printf("  Comparison:  %s\n", md_path.c_str());
-    printf("  %d regressions, %d improvements, %d unchanged out of %zu compared\n",
-           regressions, improvements, same_count, comparisons.size());
+    printf("  %zu benchmarks compared, %d both verified, %zu only in %s, %zu only in %s\n",
+           comparisons.size(), both_verified,
+           only_in_baseline.size(), name_a.c_str(),
+           only_in_current.size(), name_b.c_str());
 
     // --- CSV Output ---
     std::string csv_path = output_path + ".csv";
     std::ofstream csv(csv_path);
     if (csv.is_open()) {
         csv << "benchmark,category,mode,resolution,"
-            << name_a << "_median_ms," << name_a << "_mp_per_sec,"
-            << name_b << "_median_ms," << name_b << "_mp_per_sec,"
-            << "change_percent,status\n";
+            << name_a << "_median_ms," << name_a << "_mp_per_sec," << name_a << "_verified,"
+            << name_b << "_median_ms," << name_b << "_mp_per_sec," << name_b << "_verified,"
+            << "speedup\n";
         for (const auto& ce : comparisons) {
-            csv << ce.name << "," << ce.category << "," << ce.mode << "," << ce.resolution << ","
-                << std::fixed << std::setprecision(4) << ce.baseline_median_ms << ","
-                << std::setprecision(2) << ce.baseline_mps << ","
-                << std::setprecision(4) << ce.current_median_ms << ","
-                << std::setprecision(2) << ce.current_mps << ","
-                << std::setprecision(2) << ce.change_percent << ","
-                << ce.status << "\n";
+            csv << ce.name << "," << ce.category << "," << ce.mode << "," << ce.resolution << ",";
+            if (ce.baseline_supported) {
+                csv << std::fixed << std::setprecision(4) << ce.baseline_median_ms << ","
+                    << std::setprecision(2) << ce.baseline_mps << ","
+                    << (ce.baseline_verified ? "PASS" : "FAIL") << ",";
+            } else {
+                csv << ",,,";
+            }
+            if (ce.current_supported) {
+                csv << std::fixed << std::setprecision(4) << ce.current_median_ms << ","
+                    << std::setprecision(2) << ce.current_mps << ","
+                    << (ce.current_verified ? "PASS" : "FAIL") << ",";
+            } else {
+                csv << ",,,";
+            }
+            if (ce.speedup > 0 && ce.baseline_verified && ce.current_verified) {
+                csv << std::setprecision(4) << ce.speedup;
+            }
+            csv << "\n";
         }
         printf("  Comparison CSV: %s\n", csv_path.c_str());
     }
