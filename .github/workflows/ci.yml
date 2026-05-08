@@ -49,7 +49,7 @@ jobs:
       # --- MIVisionX (AMD OpenVX) ---
       - name: Build MIVisionX (CPU backend)
         run: |
-          git clone --depth 1 https://github.com/ROCm/MIVisionX.git /tmp/openvx-mivisionx
+          git clone --depth 1 --branch develop https://github.com/ROCm/MIVisionX.git /tmp/openvx-mivisionx
           cd /tmp/openvx-mivisionx && mkdir build && cd build
           cmake -DBACKEND=CPU -DNEURAL_NET=OFF -DLOOM=OFF -DMIGRAPHX=OFF \
                 -DCMAKE_INSTALL_PREFIX=/tmp/openvx-mivisionx/install ..

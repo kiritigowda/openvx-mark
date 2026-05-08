@@ -67,9 +67,10 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
             const uint32_t W = 128, H = 128;
-            std::vector<uint8_t> a(W * H);
-            for (uint32_t i = 0; i < W * (H / 2); i++) a[i] = 0;
-            for (uint32_t i = W * (H / 2); i < W * H; i++) a[i] = 255;
+            std::vector<uint8_t> a(W * H, 0);
+            for (uint32_t r = 60; r < 68; r++)
+                for (uint32_t c = 0; c < W; c++)
+                    a[r * W + c] = 255;
             vx_image in = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, a.data());
             if (!in) return true;
             vx_image out = vxCreateImage(ctx, W, H, VX_DF_IMAGE_U8);
