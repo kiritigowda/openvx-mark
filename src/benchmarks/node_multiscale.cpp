@@ -124,11 +124,12 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            std::vector<uint8_t> a(64 * 64, 100);
-            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            const uint32_t W = 320, H = 240;
+            std::vector<uint8_t> a(W * H, 100);
+            vx_image in = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, a.data());
             if (!in) return true;
-            vx_pyramid lap = vxCreatePyramid(ctx, 1, VX_SCALE_PYRAMID_HALF, 64, 64, VX_DF_IMAGE_S16);
-            vx_image remainder = vxCreateImage(ctx, 32, 32, VX_DF_IMAGE_U8);
+            vx_pyramid lap = vxCreatePyramid(ctx, 1, VX_SCALE_PYRAMID_HALF, W, H, VX_DF_IMAGE_S16);
+            vx_image remainder = vxCreateImage(ctx, W / 2, H / 2, VX_DF_IMAGE_U8);
             vx_graph g = vxCreateGraph(ctx);
             vx_node n = vxLaplacianPyramidNode(g, in, lap, remainder);
             if (vxVerifyGraph(g) != VX_SUCCESS) {
@@ -142,9 +143,10 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
                 vxReleaseImage(&remainder); vxReleasePyramid(&lap); vxReleaseImage(&in);
                 return true;
             }
-            auto result = verify::readImage(remainder, 32, 32);
-            bool ok = (std::abs((int)result[0] - 100) <= 10);
-            if (!ok) fprintf(stderr, "  [verify] LaplacianPyramid: remainder[0]=%d (expected ~100)\n", (int)result[0]);
+            auto result = verify::readImage(remainder, W / 2, H / 2);
+            uint32_t cx = W / 4, cy = H / 4;
+            uint8_t center_val = result[cy * (W / 2) + cx];
+            bool ok = (std::abs((int)center_val - 100) <= 10);
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseImage(&remainder); vxReleasePyramid(&lap); vxReleaseImage(&in);
             return ok;

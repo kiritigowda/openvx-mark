@@ -66,10 +66,10 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            const uint32_t W = 128, H = 128;
+            const uint32_t W = 320, H = 240;
             std::vector<uint8_t> a(W * H, 0);
-            for (uint32_t r = 60; r < 68; r++)
-                for (uint32_t c = 0; c < W; c++)
+            for (uint32_t r = 100; r < 140; r++)
+                for (uint32_t c = 50; c < 270; c++)
                     a[r * W + c] = 255;
             vx_image in = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, a.data());
             if (!in) return true;
@@ -91,7 +91,14 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
                 vxReleaseImage(&in); vxReleaseImage(&out);
                 return true;
             }
-            bool ok = verify::imageNonZero(out, W, H);
+            auto result = verify::readImage(out, W, H);
+            bool has_edge_near_boundary = false;
+            for (uint32_t r = 98; r <= 142 && !has_edge_near_boundary; r++)
+                for (uint32_t c = 48; c <= 272 && !has_edge_near_boundary; c++)
+                    if (r < H && c < W && result[r * W + c] != 0)
+                        has_edge_near_boundary = true;
+            bool interior_clean = (result[120 * W + 160] == 0);
+            bool ok = has_edge_near_boundary && interior_clean;
             vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseThreshold(&hyst);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;
@@ -315,10 +322,51 @@ std::vector<BenchmarkCase> registerFeatureBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            // No simple correctness check for optical flow — verify the kernel exists and runs
-            vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_OPTICAL_FLOW_PYR_LK);
-            bool ok = (vxGetStatus((vx_reference)k) == VX_SUCCESS);
-            if (ok) vxReleaseKernel(&k);
+            const uint32_t W = 64, H = 64;
+            std::vector<uint8_t> a(W * H, 100);
+            vx_image img1 = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, a.data());
+            vx_image img2 = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, a.data());
+            if (!img1 || !img2) {
+                if (img1) vxReleaseImage(&img1);
+                if (img2) vxReleaseImage(&img2);
+                return true;
+            }
+            vx_pyramid pyr1 = vxCreatePyramid(ctx, 2, VX_SCALE_PYRAMID_HALF, W, H, VX_DF_IMAGE_U8);
+            vx_pyramid pyr2 = vxCreatePyramid(ctx, 2, VX_SCALE_PYRAMID_HALF, W, H, VX_DF_IMAGE_U8);
+            vx_array old_pts = vxCreateArray(ctx, VX_TYPE_KEYPOINT, 10);
+            vx_array new_pts = vxCreateArray(ctx, VX_TYPE_KEYPOINT, 10);
+            vx_keypoint_t pts[4];
+            for (int i = 0; i < 4; i++) {
+                pts[i].x = 16 + (i % 2) * 32;
+                pts[i].y = 16 + (i / 2) * 32;
+                pts[i].strength = 1.0f;
+                pts[i].tracking_status = 1;
+                pts[i].scale = 0.0f;
+                pts[i].orientation = 0.0f;
+                pts[i].error = 0.0f;
+            }
+            vxAddArrayItems(old_pts, 4, pts, sizeof(vx_keypoint_t));
+            vx_float32 eps_val = 0.01f;
+            vx_scalar epsilon = vxCreateScalar(ctx, VX_TYPE_FLOAT32, &eps_val);
+            vx_uint32 iter_val = 5;
+            vx_scalar num_iters = vxCreateScalar(ctx, VX_TYPE_UINT32, &iter_val);
+            vx_bool use_init = vx_false_e;
+            vx_scalar use_initial = vxCreateScalar(ctx, VX_TYPE_BOOL, &use_init);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node pn1 = vxGaussianPyramidNode(g, img1, pyr1);
+            vx_node pn2 = vxGaussianPyramidNode(g, img2, pyr2);
+            vx_node n = vxOpticalFlowPyrLKNode(g, pyr1, pyr2, old_pts, old_pts,
+                                                new_pts, VX_TERM_CRITERIA_BOTH,
+                                                epsilon, num_iters, use_initial, 5);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            bool ok = (status == VX_SUCCESS);
+            vxReleaseNode(&pn1); vxReleaseNode(&pn2); vxReleaseNode(&n);
+            vxReleaseGraph(&g);
+            vxReleaseScalar(&epsilon); vxReleaseScalar(&num_iters); vxReleaseScalar(&use_initial);
+            vxReleaseArray(&old_pts); vxReleaseArray(&new_pts);
+            vxReleasePyramid(&pyr1); vxReleasePyramid(&pyr2);
+            vxReleaseImage(&img1); vxReleaseImage(&img2);
             return ok;
         };
         cases.push_back(bc);
