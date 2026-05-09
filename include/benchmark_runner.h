@@ -37,6 +37,30 @@ struct BenchmarkCase {
     // Output verification: runs kernel on small known input, checks correctness
     using VerifyFn = std::function<bool(vx_context ctx)>;
     VerifyFn verify_fn;
+
+    // When set, the runner builds + verifies + processes + tears down a
+    // fresh graph for every measured iteration (and warm-up), and the
+    // timer brackets the entire build+verify+process cycle.
+    //
+    // Use this for kernels where an implementation might hoist real
+    // work out of `vxProcessGraph()` and into the kernel Initializer
+    // (which runs once during `vxVerifyGraph()`), turning subsequent
+    // `vxProcessGraph()` calls into ~1 µs no-op stubs. The Khronos
+    // OpenVX sample-impl does exactly this for `vxLaplacianPyramidKernel`
+    // / `vxLaplacianReconstructKernel`: the per-iteration kernel
+    // callback is a 4-line `if (num == ...) status = VX_SUCCESS;`
+    // stub, while the entire pyramid (Gaussian build, 5x5 upsample,
+    // per-level subtract) is computed once in
+    // `vxLaplacianPyramidInitializer`. With the default tight loop
+    // this produces a misleading ~1.4 million MP/s reading on FHD
+    // because `vxProcessGraph()` was no-opped.
+    //
+    // Forcing a fresh graph each iteration captures the total cost of
+    // the kernel's computation regardless of which lifecycle phase the
+    // implementation chooses to perform it in, and gives a fair
+    // comparison against spec-compliant implementations that recompute
+    // on every `vxProcessGraph()` call.
+    bool rebuild_graph_per_iteration = false;
 };
 
 class BenchmarkRunner {

@@ -144,6 +144,189 @@ BenchmarkResult BenchmarkRunner::runGraphMode(const BenchmarkCase& bc, const Res
 
     vx_context ctx = context_.handle();
     TestDataGenerator gen(config_.seed);
+
+    // ----------------------------------------------------------------------
+    // Rebuild-per-iteration path
+    //
+    // Builds a fresh graph for every measured iteration (and warmup) and
+    // brackets the timer around the entire build + verify + process +
+    // teardown cycle. Used by kernels that have implementations known to
+    // hoist real work into the kernel Initializer (which runs once at
+    // `vxVerifyGraph` time) and turn `vxProcessGraph` into a no-op stub —
+    // see the comment on `BenchmarkCase::rebuild_graph_per_iteration` for
+    // the Khronos LaplacianPyramid example.
+    //
+    // Tradeoff: this path includes graph-construction overhead in the
+    // measured time, which is small relative to real FHD-scale kernel
+    // work but would dominate ultra-cheap kernels — so it is opt-in and
+    // every other case keeps the existing tight `vxProcessGraph`-only
+    // measurement loop below.
+    // ----------------------------------------------------------------------
+    if (bc.rebuild_graph_per_iteration) {
+        auto build_and_verify_once = [&](BenchmarkResult& r,
+                                          ResourceTracker& tr) -> vx_graph {
+            vx_graph g = vxCreateGraph(ctx);
+            if (vxGetStatus((vx_reference)g) != VX_SUCCESS) {
+                r.supported = false;
+                r.skip_reason = "failed to create graph";
+                return nullptr;
+            }
+            tr.trackGraph(g);
+            if (!bc.graph_setup(ctx, g, res.width, res.height, gen, tr)) {
+                r.supported = false;
+                r.skip_reason = "graph setup failed";
+                return nullptr;
+            }
+            if (vxVerifyGraph(g) != VX_SUCCESS) {
+                r.supported = false;
+                r.skip_reason = "vxVerifyGraph failed (kernel not fully supported)";
+                return nullptr;
+            }
+            return g;
+        };
+
+        // Sanity-check the kernel is buildable on this implementation
+        // before paying the per-iteration build cost. Any failure here
+        // surfaces the same skip_reason as the default path so report
+        // diffing remains stable.
+        {
+            ResourceTracker probe_tracker;
+            if (build_and_verify_once(result, probe_tracker) == nullptr) {
+                return result;
+            }
+        }
+
+        // Output verification once (uses its own context-side resources;
+        // the verify lambda is responsible for cleaning up).
+        if (bc.verify_fn) {
+            if (!bc.verify_fn(ctx)) {
+                result.verified = false;
+                result.skip_reason = "output verification failed";
+            }
+        }
+
+        // Warm-up — same shape as the measured loop so the cycle (and
+        // any allocator caches the impl maintains across vxReleaseGraph)
+        // converges before measurement starts.
+        for (int i = 0; i < config_.warmup; i++) {
+            ResourceTracker warm_tracker;
+            vx_graph g = build_and_verify_once(result, warm_tracker);
+            if (!g) return result;
+            vxProcessGraph(g);
+        }
+
+        std::vector<double> samples;
+        samples.reserve(config_.iterations);
+        BenchmarkTimer timer;
+        vx_perf_t accum_perf = {};
+        accum_perf.tmp = 0;
+        bool any_vx_perf = false;
+
+        auto measure_iter = [&](BenchmarkResult& r) -> bool {
+            ResourceTracker iter_tracker;
+            timer.start();
+            vx_graph g = vxCreateGraph(ctx);
+            if (vxGetStatus((vx_reference)g) != VX_SUCCESS) {
+                timer.stop();
+                r.supported = false;
+                r.skip_reason = "failed to create graph during measurement";
+                return false;
+            }
+            iter_tracker.trackGraph(g);
+            if (!bc.graph_setup(ctx, g, res.width, res.height, gen, iter_tracker)) {
+                timer.stop();
+                r.supported = false;
+                r.skip_reason = "graph setup failed during measurement";
+                return false;
+            }
+            if (vxVerifyGraph(g) != VX_SUCCESS) {
+                timer.stop();
+                r.supported = false;
+                r.skip_reason = "vxVerifyGraph failed during measurement";
+                return false;
+            }
+            vx_status s = vxProcessGraph(g);
+            timer.stop();
+            if (s != VX_SUCCESS) {
+                r.supported = false;
+                r.skip_reason = "vxProcessGraph failed during measurement";
+                return false;
+            }
+            // vx_perf_t snapshot before the graph is torn down.
+            vx_perf_t perf = {};
+            if (BenchmarkTimer::queryGraphPerf(g, perf)) {
+                accum_perf.avg += perf.avg;
+                accum_perf.min = (accum_perf.num == 0)
+                    ? perf.min
+                    : (perf.min < accum_perf.min ? perf.min : accum_perf.min);
+                if (perf.max > accum_perf.max) accum_perf.max = perf.max;
+                accum_perf.num += 1;
+                any_vx_perf = true;
+            }
+            samples.push_back(timer.elapsed_ns());
+            return true;
+            // iter_tracker dtor releases graph + setup-tracked refs.
+        };
+
+        for (int i = 0; i < config_.iterations; i++) {
+            if (!measure_iter(result)) return result;
+        }
+
+        result.wall_clock = BenchmarkStats::compute(samples);
+        result.megapixels_per_sec = BenchmarkStats::computeThroughput(
+            res.width, res.height, result.wall_clock.median_ns);
+
+        int retries_left = config_.max_retries;
+        int current_iters = config_.iterations;
+        while (result.wall_clock.cv_percent > config_.stability_threshold && retries_left > 0) {
+            retries_left--;
+            result.retry_count++;
+            current_iters *= 2;
+            if (config_.verbose) {
+                printf("  RETRY %d: CV=%.1f%% > %.1f%%, re-running with %d iterations (rebuild path)\n",
+                       result.retry_count, result.wall_clock.cv_percent,
+                       config_.stability_threshold, current_iters);
+            }
+            samples.clear();
+            samples.reserve(current_iters);
+            accum_perf = {};
+            any_vx_perf = false;
+            for (int i = 0; i < current_iters; i++) {
+                if (!measure_iter(result)) return result;
+            }
+            result.wall_clock = BenchmarkStats::compute(samples);
+            result.megapixels_per_sec = BenchmarkStats::computeThroughput(
+                res.width, res.height, result.wall_clock.median_ns);
+            result.iterations = current_iters;
+        }
+
+        if (result.wall_clock.cv_percent > config_.stability_threshold) {
+            result.stability_warning = true;
+        }
+
+        if (any_vx_perf && accum_perf.num > 0) {
+            result.has_vx_perf = true;
+            // Average per-iteration (ns) — vx_perf_t::avg is per-iter
+            // already, so a mean across iterations is the right summary
+            // for the rebuild path's repeated single-shot graphs.
+            result.vx_perf.mean_ns = static_cast<double>(accum_perf.avg) /
+                                      static_cast<double>(accum_perf.num);
+            result.vx_perf.median_ns = result.vx_perf.mean_ns;
+            result.vx_perf.min_ns = static_cast<double>(accum_perf.min);
+            result.vx_perf.max_ns = static_cast<double>(accum_perf.max);
+            result.vx_perf.sample_count = accum_perf.num;
+        }
+
+        if (config_.verbose && result.wall_clock.cv_percent > config_.stability_threshold) {
+            printf("  WARNING: CV=%.1f%% — consider more iterations for stable results\n",
+                   result.wall_clock.cv_percent);
+        }
+        return result;
+    }
+
+    // ----------------------------------------------------------------------
+    // Default path: build graph once, time only `vxProcessGraph()` per iter.
+    // ----------------------------------------------------------------------
     ResourceTracker tracker;
 
     // Create graph

@@ -94,6 +94,21 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
         bc.feature_set = "vision";
         bc.kernel_enum = VX_KERNEL_LAPLACIAN_PYRAMID;
         bc.required_kernels = {VX_KERNEL_LAPLACIAN_PYRAMID};
+        // The Khronos OpenVX sample-impl computes the entire Laplacian
+        // pyramid inside `vxLaplacianPyramidInitializer` (which runs
+        // once at `vxVerifyGraph` time) and ships the per-iteration
+        // kernel callback as a 4-line stub that just returns
+        // VX_SUCCESS. With the default tight `vxProcessGraph`-only
+        // measurement loop that gives a misleading ~1 µs / 1.4 million
+        // MP/s reading at FHD, while spec-compliant implementations
+        // that recompute on every `vxProcessGraph` (correctly, since
+        // the spec makes no guarantee that inputs are unchanged
+        // between calls) honestly report tens of milliseconds. Force
+        // a fresh build+verify+process cycle per iteration so the
+        // total cost of the kernel's computation lands inside the
+        // timer regardless of which lifecycle phase the implementation
+        // chose to perform it in.
+        bc.rebuild_graph_per_iteration = true;
         bc.graph_setup = [](vx_context ctx, vx_graph graph,
                             uint32_t width, uint32_t height,
                             TestDataGenerator& gen,
