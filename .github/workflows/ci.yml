@@ -500,11 +500,20 @@ jobs:
 
       # ----- Pairwise comparisons -----
       #
-      # `compare_reports.py` defines speedup as
-      #     speedup = throughput(report_b) / throughput(report_a)
-      # i.e. ">1.00 = report_b is faster". We always pass the pair in the
-      # same order as the report header label so the Speedup column reads
-      # naturally as "<name_b> over <name_a>".
+      # Each comparison is oriented as "<candidate> over <baseline>" so
+      # the Speedup column reads as `candidate / baseline` (>1.00x =
+      # candidate is faster). The orientation is deliberate: we want
+      # MIVisionX-vs-* and rustVX-vs-Khronos to read as "how much faster
+      # is the more-tuned implementation than the reference", giving an
+      # at-a-glance headline number that grows when the candidate wins:
+      #
+      #   * MIVisionX over Khronos sample   (AMD over reference)
+      #   * MIVisionX over rustVX           (AMD over Rust impl)
+      #   * rustVX     over Khronos sample  (Rust impl over reference)
+      #
+      # Mechanically, `compare_reports.py` computes
+      #     speedup = throughput(arg2) / throughput(arg1)
+      # so the candidate is passed as the SECOND positional arg.
       - name: Pairwise comparisons
         if: always()
         run: |
@@ -516,23 +525,101 @@ jobs:
           R="build-rustvx/results/benchmark_results.json"
 
           do_compare() {
-            local name_a="$1" name_b="$2" path_a="$3" path_b="$4"
-            local out="comparisons/${name_a}-vs-${name_b}"
+            local candidate="$1" baseline="$2"
+            local path_candidate="$3" path_baseline="$4"
+            local cand_label="$5" base_label="$6"
+            local out="comparisons/${candidate}-over-${baseline}"
+
             {
-              echo "## Comparison: ${name_a} vs ${name_b}"
+              echo "## ${cand_label} over ${base_label}"
               echo ""
             } >> "$GITHUB_STEP_SUMMARY"
-            if [ ! -f "$path_a" ] || [ ! -f "$path_b" ]; then
-              echo "_Skipped: one or both reports missing (${name_a}: $([ -f "$path_a" ] && echo OK || echo MISSING), ${name_b}: $([ -f "$path_b" ] && echo OK || echo MISSING))_" \
-                >> "$GITHUB_STEP_SUMMARY"
-              echo "" >> "$GITHUB_STEP_SUMMARY"
-              echo "---" >> "$GITHUB_STEP_SUMMARY"
-              echo "" >> "$GITHUB_STEP_SUMMARY"
+
+            if [ ! -f "$path_candidate" ] || [ ! -f "$path_baseline" ]; then
+              {
+                echo "_Skipped: one or both reports missing (${cand_label}: $([ -f "$path_candidate" ] && echo OK || echo MISSING), ${base_label}: $([ -f "$path_baseline" ] && echo OK || echo MISSING))_"
+                echo ""
+                echo "---"
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
               return 0
             fi
-            python3 scripts/compare_reports.py "$path_a" "$path_b" --output "$out"
+
+            # Headline geomean — adapted from the perf-gate Python block
+            # in rustVX's conformance CI. Keys benchmarks by
+            # (name, mode, resolution), filters to verified-on-both
+            # entries with positive throughput, then computes geomean,
+            # median, win/loss counts, and best/worst kernels.
+            python3 - "$path_candidate" "$path_baseline" "$cand_label" "$base_label" \
+              >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, math, sys
+
+          cand_path, base_path = sys.argv[1], sys.argv[2]
+          cand_label, base_label = sys.argv[3], sys.argv[4]
+          with open(cand_path) as f: cand = json.load(f)
+          with open(base_path) as f: base = json.load(f)
+
+          def by_key(report):
+              return {(r['name'], r['mode'], r['resolution']): r
+                      for r in report.get('results', [])}
+
+          c = by_key(cand)
+          b = by_key(base)
+          shared = sorted(set(c) & set(b))
+
+          speedups = []
+          wins, losses = 0, 0
+          best = (None, 0.0)
+          worst = (None, math.inf)
+
+          for key in shared:
+              rc, rb = c[key], b[key]
+              if not (rc.get('verified', True) and rb.get('verified', True)):
+                  continue
+              mc = rc.get('megapixels_per_sec', 0)
+              mb = rb.get('megapixels_per_sec', 0)
+              if mc <= 0 or mb <= 0:
+                  continue
+              s = mc / mb  # >1 means candidate is faster
+              speedups.append(s)
+              if s > 1.0: wins += 1
+              elif s < 1.0: losses += 1
+              if s > best[1]:  best  = (key, s)
+              if s < worst[1]: worst = (key, s)
+
+          if not speedups:
+              print(f'_No verified benchmarks were directly comparable between {cand_label} and {base_label}._')
+              print()
+          else:
+              geomean = math.exp(sum(math.log(s) for s in speedups) / len(speedups))
+              median  = sorted(speedups)[len(speedups) // 2]
+              print('| Metric | Value |')
+              print('|:---|---:|')
+              print(f'| Geomean speedup ({cand_label} / {base_label}) | **{geomean:.2f}x** |')
+              print(f'| Median speedup ({cand_label} / {base_label})  | {median:.2f}x |')
+              print(f'| Benchmarks compared                              | {len(speedups)} |')
+              print(f'| {cand_label} faster                              | {wins} |')
+              print(f'| {base_label} faster                              | {losses} |')
+              if best[0]:
+                  bk, bv = best
+                  print(f'| Best  {cand_label} speedup                      | {bv:.2f}x ({bk[0]} / {bk[1]} / {bk[2]}) |')
+              if worst[0] and worst[1] != math.inf:
+                  wk, wv = worst
+                  print(f'| Worst {cand_label} speedup                      | {wv:.2f}x ({wk[0]} / {wk[1]} / {wk[2]}) |')
+              print()
+              if geomean >= 1.0:
+                  print(f'> **{cand_label}** is **{geomean:.2f}x** faster than **{base_label}** on average (geomean across {len(speedups)} verified benchmarks).')
+              else:
+                  print(f'> **{cand_label}** is **{1.0/geomean:.2f}x slower** than **{base_label}** on average (geomean across {len(speedups)} verified benchmarks).')
+              print()
+          PY
+
+            # Detailed per-kernel comparison from compare_reports.py.
+            # Pass baseline first so the Speedup column reads as
+            # "candidate / baseline" — same orientation as the headline.
+            python3 scripts/compare_reports.py "$path_baseline" "$path_candidate" --output "$out"
             {
-              echo "_Speedup column reads as **${name_b} / ${name_a}** (>1.00x = ${name_b} faster)._"
+              echo "_Detailed per-kernel comparison — Speedup column reads as **${cand_label} / ${base_label}** (>1.00x = ${cand_label} faster)._"
               echo ""
               cat "${out}.md"
               echo ""
@@ -541,9 +628,11 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           }
 
-          do_compare mivisionx khronos "$M" "$K"
-          do_compare mivisionx rustvx  "$M" "$R"
-          do_compare khronos    rustvx  "$K" "$R"
+          # Order: MIVisionX (AMD) over both reference impls, then rustVX
+          # over Khronos sample (the slowest of the three).
+          do_compare mivisionx khronos "$M" "$K" "MIVisionX (AMD OpenVX)" "Khronos sample"
+          do_compare mivisionx rustvx  "$M" "$R" "MIVisionX (AMD OpenVX)" "rustVX"
+          do_compare rustvx    khronos "$R" "$K" "rustVX"                 "Khronos sample"
 
           echo "--- comparison artifacts ---"
           ls -la comparisons/ || true
