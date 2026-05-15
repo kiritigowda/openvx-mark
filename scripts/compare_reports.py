@@ -147,6 +147,13 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, reports, syst
         if enhanced_a > 0 or enhanced_b > 0:
             f.write(f'| Enhanced Vision Score (MP/s) | {enhanced_a:.2f} | {enhanced_b:.2f} |\n')
 
+        framework_a = scores[0].get('framework_score', 0) if len(scores) > 0 else 0
+        framework_b = scores[1].get('framework_score', 0) if len(scores) > 1 else 0
+        framework_count_a = scores[0].get('framework_metric_count', 0) if len(scores) > 0 else 0
+        framework_count_b = scores[1].get('framework_metric_count', 0) if len(scores) > 1 else 0
+        if framework_count_a > 0 or framework_count_b > 0:
+            f.write(f'| Framework Score (x, geomean) | {framework_a:.3f} | {framework_b:.3f} |\n')
+
         conformance_info = []
         for report in reports:
             conf_list = report.get('conformance', [])
@@ -187,6 +194,55 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, reports, syst
                 display = key.split('/')[-1] if '/' in key else key
                 sign = '+' if change >= 0 else ''
                 f.write(f'| {display} | {a_val:.2f} | {b_val:.2f} | {sign}{change:.1f} |\n')
+            f.write('\n')
+
+        # --- Framework Metrics Comparison ---
+        # Group framework metrics by (benchmark name, resolution); union across reports.
+        fw_keys = {}  # key -> display
+        fw_metrics_by_key = {}  # key -> set(metric names)
+        per_side_metrics = [{}, {}]  # side -> key -> {metric_name: dict}
+        for side, rmap in enumerate(result_maps):
+            for (name, mode, resolution), r in rmap.items():
+                fms = r.get('framework_metrics', [])
+                if not fms:
+                    continue
+                key = (name, resolution)
+                fw_keys[key] = f'{name} @ {resolution}'
+                fw_metrics_by_key.setdefault(key, set())
+                per_side_metrics[side].setdefault(key, {})
+                for fm in fms:
+                    nm = fm.get('name')
+                    if not nm:
+                        continue
+                    fw_metrics_by_key[key].add(nm)
+                    per_side_metrics[side][key][nm] = fm
+
+        if fw_keys:
+            f.write('## Framework Metrics Comparison\n\n')
+            f.write(f'> Per-scenario framework metrics (orchestration, scheduling, async, '
+                    f'verification). Higher-is-better metrics show {impl_names[1]}/{impl_names[0]}; '
+                    f'lower-is-better metrics show {impl_names[0]}/{impl_names[1]}. '
+                    f'A ratio >1.00 always means {impl_names[1]} is better.\n\n')
+            f.write(f'| Benchmark @ Resolution | Metric | Unit | {impl_names[0]} | {impl_names[1]} | Ratio | Direction |\n')
+            f.write('|:---|:---|:---|---:|---:|---:|:---|\n')
+            for key in sorted(fw_keys.keys()):
+                display = fw_keys[key]
+                for nm in sorted(fw_metrics_by_key[key]):
+                    a_fm = per_side_metrics[0].get(key, {}).get(nm)
+                    b_fm = per_side_metrics[1].get(key, {}).get(nm)
+                    higher_better = (a_fm or b_fm or {}).get('higher_is_better', True)
+                    unit = (a_fm or b_fm or {}).get('unit', '') or '—'
+                    a_val = a_fm.get('value') if a_fm else None
+                    b_val = b_fm.get('value') if b_fm else None
+                    a_str = f'{a_val:.3f}' if a_val is not None else '—'
+                    b_str = f'{b_val:.3f}' if b_val is not None else '—'
+                    if a_val and b_val and a_val > 0 and b_val > 0:
+                        ratio = (b_val / a_val) if higher_better else (a_val / b_val)
+                        ratio_str = f'{ratio:.2f}'
+                    else:
+                        ratio_str = '—'
+                    direction = 'higher is better' if higher_better else 'lower is better'
+                    f.write(f'| {display} | `{nm}` | {unit} | {a_str} | {b_str} | {ratio_str} | {direction} |\n')
             f.write('\n')
 
         # --- Build comparison rows (include all results, not just verified) ---

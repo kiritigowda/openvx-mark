@@ -128,6 +128,30 @@ CompositeScores BenchmarkReport::computeScores(const std::vector<BenchmarkResult
         scores.category_scores[cat] = geomean(vals);
     }
 
+    // Framework Score: equal-weight geometric mean of "higher is better"
+    // dimensionless framework metrics. We restrict to a curated allow-list so
+    // adding new framework metrics later does not silently shift the score.
+    static const std::set<std::string> kFrameworkScoreMetrics = {
+        "graph_speedup",          // graph_dividend
+        "virtual_dividend",       // graph_dividend
+        "parallelism_efficiency", // parallel_branches
+        "concurrency_speedup",    // async_streaming
+    };
+
+    std::vector<double> fw_values;
+    for (const auto& r : results) {
+        if (!r.supported || !r.verified) continue;
+        for (const auto& fm : r.framework_metrics) {
+            if (kFrameworkScoreMetrics.find(fm.name) == kFrameworkScoreMetrics.end()) continue;
+            if (fm.value <= 0) continue;
+            fw_values.push_back(fm.value);
+        }
+    }
+    scores.framework_metric_count = static_cast<int>(fw_values.size());
+    if (!fw_values.empty()) {
+        scores.framework_score = geomean(fw_values);
+    }
+
     return scores;
 }
 
@@ -364,7 +388,10 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
         }
         f << "\n";
     }
-    f << "    }\n";
+    f << "    },\n";
+    f << "    \"framework_score\": " << std::setprecision(3)
+      << scores.framework_score << ",\n";
+    f << "    \"framework_metric_count\": " << scores.framework_metric_count << "\n";
     f << "  },\n";
 
     // Feature 7: Conformance
@@ -616,15 +643,28 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
     // Feature 1: Composite Scores
     auto scores = computeScores(results);
     f << "## Composite Scores\n\n";
-    f << "| Score | Value (MP/s) | Benchmarks |\n";
-    f << "|:---|---:|---:|\n";
+    f << "| Score | Value | Unit | Benchmarks |\n";
+    f << "|:---|---:|:---|---:|\n";
     f << "| OpenVX Vision Score | " << std::fixed << std::setprecision(2)
-      << scores.overall_vision_score << " | " << scores.vision_count << " |\n";
+      << scores.overall_vision_score << " | MP/s | " << scores.vision_count << " |\n";
     if (scores.enhanced_count > 0) {
         f << "| Enhanced Vision Score | " << scores.enhanced_vision_score
-          << " | " << scores.enhanced_count << " |\n";
+          << " | MP/s | " << scores.enhanced_count << " |\n";
+    }
+    if (scores.framework_metric_count > 0) {
+        f << "| OpenVX Framework Score | " << std::setprecision(3)
+          << scores.framework_score << " | x (geomean) | "
+          << scores.framework_metric_count << " |\n";
     }
     f << "\n";
+
+    if (scores.framework_metric_count > 0) {
+        f << "> **Framework Score** is the equal-weight geometric mean of "
+          << "`graph_speedup`, `virtual_dividend`, `parallelism_efficiency`, and "
+          << "`concurrency_speedup` across all framework benchmarks. Values >1.0x "
+          << "indicate the OpenVX graph framework adds aggregate value over a "
+          << "kernel-only baseline.\n\n";
+    }
 
     // Category Sub-Scores separated by feature set
     if (!scores.category_scores.empty()) {
@@ -761,6 +801,33 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
               << se.scaling_efficiency << " |\n";
         }
         f << "\n";
+    }
+
+    // Framework Benchmarks: per-scenario framework metrics
+    {
+        std::vector<const BenchmarkResult*> framework_results;
+        for (const auto& r : results) {
+            if (!r.framework_metrics.empty()) framework_results.push_back(&r);
+        }
+        if (!framework_results.empty()) {
+            f << "## Framework Benchmarks\n\n";
+            f << "Per-scenario metrics that characterize the OpenVX *graph framework* "
+              << "(orchestration, scheduling, async, verification) rather than raw kernel "
+              << "throughput.\n\n";
+            f << "| Benchmark | Resolution | Metric | Value | Unit | Direction |\n";
+            f << "|:---|:---|:---|---:|:---|:---|\n";
+            for (const auto* r : framework_results) {
+                for (const auto& fm : r->framework_metrics) {
+                    f << "| " << r->name << " | " << r->resolution_name
+                      << " | `" << fm.name << "` | "
+                      << std::fixed << std::setprecision(3) << fm.value
+                      << " | " << (fm.unit.empty() ? "—" : fm.unit)
+                      << " | " << (fm.higher_is_better ? "higher is better" : "lower is better")
+                      << " |\n";
+                }
+            }
+            f << "\n";
+        }
     }
 
     // Feature 2: Stability Warnings
@@ -1011,6 +1078,8 @@ struct ReportInfo {
     bool conformance_pass = false;
     int conformance_passed = 0;
     int conformance_total = 0;
+    double framework_score = 0;
+    int framework_metric_count = 0;
 };
 
 static ReportInfo extractReportInfo(const std::string& json) {
@@ -1033,6 +1102,8 @@ static ReportInfo extractReportInfo(const std::string& json) {
     std::string scores_section = extractJsonSection(json, "scores");
     info.vision_score = extractJsonNumber(scores_section, "overall_vision_score");
     info.enhanced_vision_score = extractJsonNumber(scores_section, "enhanced_vision_score");
+    info.framework_score = extractJsonNumber(scores_section, "framework_score");
+    info.framework_metric_count = (int)extractJsonNumber(scores_section, "framework_metric_count");
     info.category_scores = extractCategoryScores(json);
 
     // Parse first conformance entry
@@ -1101,6 +1172,11 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
     auto baseline_objs = extractResultObjects(baseline_json);
     auto current_objs = extractResultObjects(current_json);
 
+    struct FwMetric {
+        double value = 0;
+        std::string unit;
+        bool higher_is_better = true;
+    };
     struct ParsedResult {
         std::string name;
         std::string category;
@@ -1111,6 +1187,7 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
         double cv_percent;
         bool supported;
         bool verified;
+        std::map<std::string, FwMetric> framework_metrics;
     };
 
     auto parseResults = [](const std::vector<std::string>& objs) {
@@ -1136,6 +1213,39 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
                 pr.cv_percent = extractJsonNumber(wc_section, "cv_percent");
             }
             pr.mps = extractJsonNumber(obj, "megapixels_per_sec");
+
+            // Parse framework_metrics array (each entry:
+            //   {"name": "...", "value": ..., "unit": "...", "higher_is_better": ...})
+            size_t fm_pos = obj.find("\"framework_metrics\"");
+            if (fm_pos != std::string::npos) {
+                size_t arr_open = obj.find('[', fm_pos);
+                if (arr_open != std::string::npos) {
+                    int depth = 0;
+                    size_t entry_start = 0;
+                    bool in_entry = false;
+                    for (size_t i = arr_open; i < obj.size(); i++) {
+                        char c = obj[i];
+                        if (c == '{') {
+                            if (!in_entry) { entry_start = i; in_entry = true; }
+                            depth++;
+                        } else if (c == '}') {
+                            depth--;
+                            if (depth == 0 && in_entry) {
+                                std::string entry = obj.substr(entry_start, i - entry_start + 1);
+                                std::string nm = extractJsonString(entry, "name");
+                                FwMetric m;
+                                m.value = extractJsonNumber(entry, "value");
+                                m.unit = extractJsonString(entry, "unit");
+                                m.higher_is_better = extractJsonBool(entry, "higher_is_better", true);
+                                if (!nm.empty()) pr.framework_metrics[nm] = m;
+                                in_entry = false;
+                            }
+                        } else if (c == ']' && depth == 0) {
+                            break;
+                        }
+                    }
+                }
+            }
 
             std::string key = pr.name + "|" + pr.mode + "|" + pr.resolution;
             map[key] = pr;
@@ -1246,6 +1356,10 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
         f << "| Enhanced Vision Score (MP/s) | " << info_a.enhanced_vision_score
           << " | " << info_b.enhanced_vision_score << " |\n";
     }
+    if (info_a.framework_metric_count > 0 || info_b.framework_metric_count > 0) {
+        f << "| Framework Score (x, geomean) | " << std::setprecision(3)
+          << info_a.framework_score << " | " << info_b.framework_score << " |\n";
+    }
     f << "| Conformance | " << (info_a.conformance_pass ? "PASS" : "FAIL")
       << " (" << info_a.conformance_passed << "/" << info_a.conformance_total << ")"
       << " | " << (info_b.conformance_pass ? "PASS" : "FAIL")
@@ -1278,6 +1392,86 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
               << (change >= 0 ? "+" : "") << std::setprecision(1) << change << " |\n";
         }
         f << "\n";
+    }
+
+    // --- Framework Metrics Comparison ---
+    {
+        // Collect the union of (benchmark|resolution) keys that have any framework
+        // metrics in either map, plus the union of metric names per key.
+        struct FwKey { std::string display; std::string sort_key; };
+        std::map<std::string, FwKey> fw_keys;
+        std::map<std::string, std::set<std::string>> fw_metric_names;
+        auto noteFw = [&](const std::map<std::string, ParsedResult>& m) {
+            for (const auto& [k, pr] : m) {
+                if (pr.framework_metrics.empty()) continue;
+                std::string key = pr.name + "|" + pr.resolution;
+                FwKey fk{pr.name + " @ " + pr.resolution, key};
+                fw_keys[key] = fk;
+                for (const auto& [nm, _] : pr.framework_metrics) {
+                    fw_metric_names[key].insert(nm);
+                }
+            }
+        };
+        noteFw(baseline_map);
+        noteFw(current_map);
+
+        if (!fw_keys.empty()) {
+            f << "## Framework Metrics Comparison\n\n";
+            f << "> Per-scenario framework metrics (orchestration, scheduling, async, "
+              << "verification). Higher-is-better metrics show " << name_b
+              << "/" << name_a << "; lower-is-better metrics show "
+              << name_a << "/" << name_b << ". A ratio >1.00 always means "
+              << name_b << " is better.\n\n";
+            f << "| Benchmark @ Resolution | Metric | Unit | "
+              << name_a << " | " << name_b << " | Ratio | Direction |\n";
+            f << "|:---|:---|:---|---:|---:|---:|:---|\n";
+
+            for (const auto& [key, fk] : fw_keys) {
+                std::string base_key, curr_key;
+                for (const auto& [k, pr] : baseline_map) {
+                    if (pr.name + "|" + pr.resolution == key) { base_key = k; break; }
+                }
+                for (const auto& [k, pr] : current_map) {
+                    if (pr.name + "|" + pr.resolution == key) { curr_key = k; break; }
+                }
+                const ParsedResult* a_pr = base_key.empty() ? nullptr : &baseline_map.at(base_key);
+                const ParsedResult* b_pr = curr_key.empty() ? nullptr : &current_map.at(curr_key);
+
+                for (const auto& nm : fw_metric_names[key]) {
+                    const FwMetric* a_m = nullptr;
+                    const FwMetric* b_m = nullptr;
+                    if (a_pr) {
+                        auto it = a_pr->framework_metrics.find(nm);
+                        if (it != a_pr->framework_metrics.end()) a_m = &it->second;
+                    }
+                    if (b_pr) {
+                        auto it = b_pr->framework_metrics.find(nm);
+                        if (it != b_pr->framework_metrics.end()) b_m = &it->second;
+                    }
+                    bool higher_better = a_m ? a_m->higher_is_better
+                                       : (b_m ? b_m->higher_is_better : true);
+                    std::string unit = a_m ? a_m->unit : (b_m ? b_m->unit : "");
+                    double a_val = a_m ? a_m->value : 0.0;
+                    double b_val = b_m ? b_m->value : 0.0;
+
+                    f << "| " << fk.display << " | `" << nm
+                      << "` | " << (unit.empty() ? "—" : unit) << " | ";
+                    if (a_m) f << std::fixed << std::setprecision(3) << a_val; else f << "—";
+                    f << " | ";
+                    if (b_m) f << std::fixed << std::setprecision(3) << b_val; else f << "—";
+                    f << " | ";
+                    if (a_m && b_m && a_val > 0 && b_val > 0) {
+                        double ratio = higher_better ? (b_val / a_val) : (a_val / b_val);
+                        f << std::fixed << std::setprecision(2) << ratio;
+                    } else {
+                        f << "—";
+                    }
+                    f << " | " << (higher_better ? "higher is better" : "lower is better")
+                      << " |\n";
+                }
+            }
+            f << "\n";
+        }
     }
 
     // --- Summary ---

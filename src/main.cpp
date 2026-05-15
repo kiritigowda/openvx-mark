@@ -39,7 +39,8 @@ static void printUsage(const char* prog) {
     printf("  --warmup N                    Warm-up iterations (default: 10)\n");
     printf("  --seed N                      PRNG seed (default: 42)\n");
     printf("  --stability-threshold N       CV%% threshold for stability warning (default: 15)\n");
-    printf("  --max-retries N               Max retries for unstable benchmarks (default: 0)\n\n");
+    printf("  --max-retries N               Max retries for unstable benchmarks (default: 0)\n");
+    printf("  --framework-chain-depths N,N  Chain depths for verify_chain (default: 1,4,16,64)\n\n");
 
     printf("Output:\n");
     printf("  --output-dir DIR              Output directory (default: ./benchmark_results)\n");
@@ -161,6 +162,21 @@ static bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.stability_threshold = atof(argv[++i]);
         } else if (arg == "--max-retries" && i + 1 < argc) {
             config.max_retries = atoi(argv[++i]);
+        } else if (arg == "--framework-chain-depths" && i + 1 < argc) {
+            auto depth_strs = splitComma(argv[++i]);
+            config.framework_chain_depths.clear();
+            for (const auto& s : depth_strs) {
+                int n = atoi(s.c_str());
+                if (n > 0) {
+                    config.framework_chain_depths.push_back(n);
+                } else {
+                    printf("WARNING: Invalid chain depth '%s', skipping\n", s.c_str());
+                }
+            }
+            if (config.framework_chain_depths.empty()) {
+                printf("ERROR: No valid framework chain depths specified\n");
+                return false;
+            }
         } else if (arg == "--compare" && i + 1 < argc) {
             config.compare_files = splitComma(argv[++i]);
         } else {
@@ -331,6 +347,10 @@ int main(int argc, char* argv[]) {
     if (scores.enhanced_count > 0) {
         printf("  Enhanced Vision Score: %.2f MP/s (%d benchmarks)\n",
                scores.enhanced_vision_score, scores.enhanced_count);
+    }
+    if (scores.framework_metric_count > 0) {
+        printf("  OpenVX Framework Score: %.3fx (geomean of %d framework metrics)\n",
+               scores.framework_score, scores.framework_metric_count);
     }
 
     // Feature 2: Stability warning count

@@ -16,6 +16,19 @@ struct CompositeScores {
     std::map<std::string, double> category_scores;  // per-category geometric mean
     int vision_count = 0;
     int enhanced_count = 0;
+
+    // Framework Score: dimensionless geometric mean of "higher is better" framework
+    // metrics that capture how much value the OpenVX *graph framework* adds beyond
+    // raw kernel throughput. Aggregates:
+    //   - graph_speedup           (graph_dividend benchmarks)
+    //   - virtual_dividend        (graph_dividend benchmarks)
+    //   - parallelism_efficiency  (parallel_branches benchmarks)
+    //   - concurrency_speedup     (async_streaming benchmarks)
+    // A value >1.0 means the framework adds aggregate value over a kernel-only
+    // baseline. Lower-is-better metrics (verify cost, async overhead) are
+    // intentionally excluded so the score has a single, monotonic interpretation.
+    double framework_score = 0;
+    int framework_metric_count = 0;
 };
 
 // Conformance checking (Feature 7)

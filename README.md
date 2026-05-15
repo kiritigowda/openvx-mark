@@ -120,6 +120,7 @@ cmake --build .
 | `--seed N` | PRNG seed for reproducible test data | `42` |
 | `--stability-threshold N` | CV% threshold for stability warnings | `15` |
 | `--max-retries N` | Max retries for unstable benchmarks (2x iterations each retry) | `0` |
+| `--framework-chain-depths N,N,...` | Chain depths swept by `VerifyChain_Box3x3` | `1,4,16,64` |
 
 #### Output
 
@@ -178,6 +179,10 @@ Framework benchmarks are **opt-in** — they are not in the default run and do n
 |:---|:---|:---|
 | `GraphDividend_Box3x3_x4` | Box3x3 × 4 | Pure framework overhead (same kernel, isolates orchestration cost) |
 | `GraphDividend_MixedFilters` | Gaussian3x3 → Box3x3 → Median3x3 → Erode3x3 | Realistic 4-stage filter pipeline |
+| `VerifyChain_Box3x3` | Box3x3 × N (sweeps `--framework-chain-depths`, default 1, 4, 16, 64) | Graph build / verify cost vs N nodes; first-process lazy-alloc tax |
+| `ParallelBranches_Box3x3` | 4 independent Box3x3 branches sharing one input | Whether the graph runtime exploits scheduling parallelism on K branches with no data dependency |
+| `Async_Single_Box3x3_x4` | One Box3x3 × 4 chain timed with `vxProcessGraph` and with `vxScheduleGraph`+`vxWaitGraph` | Cost of the async dispatch API on a single graph |
+| `Async_Concurrent_Box3x3_x2` | Two independent Box3x3 × 4 chain graphs | Whether the runtime overlaps independent graphs when scheduled concurrently |
 
 Each `GraphDividend_*` case times the same chain three ways and emits five metrics:
 
@@ -189,6 +194,67 @@ Each `GraphDividend_*` case times the same chain three ways and emits five metri
 | `graph_speedup` | × | `sum_immediate_ms / graph_virtual_ms`. **>1 means the graph form beats summed immediate calls** — the headline framework dividend |
 | `virtual_dividend` | × | `graph_real_ms / graph_virtual_ms`. **>1 means virtual intermediates help** (runtime did something useful with the freedom) |
 
+When the implementation populates `VX_NODE_PERFORMANCE` and `VX_GRAPH_PERFORMANCE` for every node in the virtual-chain run, four additional fusion-attribution metrics are emitted (skipped silently on implementations that don't expose those counters, so the headline metrics above remain comparable):
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `node_count` | count | Number of nodes in the chain |
+| `node_sum_ms` | ms | Sum over all nodes of `vxQueryNode(VX_NODE_PERFORMANCE).avg` — what the runtime says it spent inside individual kernels |
+| `graph_perf_ms` | ms | `vxQueryGraph(VX_GRAPH_PERFORMANCE).avg` — what the runtime says it spent on the whole graph |
+| `fusion_ratio` | × | `node_sum_ms / graph_perf_ms`. **≈ 1.0** = strict back-to-back execution, no fusion. **> 1.0** = graph runs faster than the sum of node times — strong evidence the runtime fused, pipelined, or overlapped nodes (this is graph framework value the per-kernel benchmarks cannot see). **< 1.0** = per-node accounting under-reports vs. the graph total (e.g. excludes shared setup); rare but possible. **≈ `node_count`** = the implementation is reporting whole-graph time on every node (i.e. it doesn't attribute per-node performance) — useful signal even though it doesn't tell you about fusion |
+
+> `fusion_ratio` is intentionally **not** included in the OpenVX Framework Score yet — only `graph_dividend` benchmarks emit it, so weighting it equally with score metrics that span every framework benchmark would over-index on this one scenario. It also depends on the implementation populating `VX_NODE_PERFORMANCE` correctly, which not every conformant runtime does. The score gating may be revisited once we have data from more implementations.
+
+`VerifyChain_Box3x3` rebuilds a chain of N Box3x3 nodes for each requested depth and reports per-N timings plus three aggregate metrics:
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `n{N}_create_ms` | ms | `vxCreateGraph` + N node creations at depth N |
+| `n{N}_verify_ms` | ms | `vxVerifyGraph` cost at depth N |
+| `n{N}_first_process_ms` | ms | First `vxProcessGraph` call (often pays a one-shot lazy-allocation / kernel-init tax) |
+| `n{N}_steady_process_ms` | ms | Median `vxProcessGraph` cost after warmup |
+| `verify_per_node_ms` | ms/node | Linear-regression slope of verify cost over N — the per-node verify tax |
+| `verify_intercept_ms` | ms | Linear-regression intercept — fixed verify cost independent of chain length |
+| `first_process_overhead_ms` | ms | `first_process_ms - steady_process_ms` at the deepest chain — the cost of the first execution beyond steady state |
+
+Use `--framework-chain-depths 1,4,16,64,256` to sweep custom depths (defaults to `1,4,16,64`).
+
+`ParallelBranches_Box3x3` builds one graph with K = 4 independent Box3x3 nodes that share a single input image and write to K independent outputs. The K nodes have no data dependency on each other, so a competent scheduler is free to dispatch them concurrently across cores or targets. The strict-serial baseline is K back-to-back `vxuBox3x3` immediate-mode calls, which admit no parallelism.
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `branches` | count | K — number of independent branches (4 in v1) |
+| `serial_immediate_ms` | ms | K back-to-back `vxuBox3x3` calls — strict-serial reference |
+| `parallel_graph_ms` | ms | One graph with K independent Box3x3 nodes — graph runtime is free to parallelize |
+| `parallelism_speedup` | × | `serial_immediate_ms / parallel_graph_ms`. **K = perfect parallelism, 1 = none** |
+| `parallelism_efficiency` | × | `parallelism_speedup / K`. **1.0 = perfect K-way parallelism, 1/K = none** |
+
+Interpreting `parallelism_efficiency`:
+- **≈ 1.0** at FHD or larger — the runtime is exploiting the K-way opportunity well (modulo memory bandwidth).
+- **> 1.0** at small resolutions — graph framework dispatch savings (the same effect measured by `graph_dividend`) compound with parallelism, since the immediate-mode baseline pays per-call dispatch tax K times.
+- **< 1/K** at very large resolutions — memory bandwidth saturates before the cores do; the K branches contend for the same input image and fight for L2/L3.
+
+`Async_Single_Box3x3_x4` runs one verified Box3x3 × 4 chain graph and times it both with synchronous `vxProcessGraph` and with the async pair `vxScheduleGraph` + `vxWaitGraph`. The point is to surface the cost of the async dispatch API itself.
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `sync_ms` | ms | Median `vxProcessGraph` time |
+| `async_ms` | ms | Median `vxScheduleGraph` + `vxWaitGraph` time |
+| `async_overhead_ratio` | × | `async_ms / sync_ms`. **Lower is better; 1.0 = no tax**, > 1 = the async API path is more expensive (typically thread-pool / signaling cost), < 1 = async path actually wins (rare but possible) |
+
+`Async_Concurrent_Box3x3_x2` builds two independent Box3x3 × 4 chain graphs (no shared data) and times the pair two ways. The async form lets the runtime overlap the two graphs; the sync form does not.
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `graphs` | count | Number of independent graphs (2 in v1) |
+| `sync_sequential_ms` | ms | `vxProcessGraph(g0); vxProcessGraph(g1)` — strict serial |
+| `async_concurrent_ms` | ms | `vxScheduleGraph(g0); vxScheduleGraph(g1); vxWaitGraph(g0); vxWaitGraph(g1)` — runtime is free to overlap |
+| `concurrency_speedup` | × | `sync_sequential_ms / async_concurrent_ms`. **>1 = the runtime overlapped graphs**, ≈ 1 = it serialized them, < 1 = async overhead exceeded any concurrency gain |
+
+`concurrency_speedup` < 1 at small resolutions is a real and useful signal: it means the implementation's async dispatch overhead exceeds any concurrency gain at that work size. The metric only becomes positive when the per-graph work is large enough to amortize the async path.
+
+> Pipelined streaming via the optional `vx_khr_pipelining` extension is a future enhancement and is intentionally not implemented in this release; the two scenarios above use only standard OpenVX APIs and run on every conformant implementation.
+
 ## Output
 
 ### Terminal Summary
@@ -197,6 +263,7 @@ Each `GraphDividend_*` case times the same chain three ways and emits five metri
 =============================================================
   Summary: 156 total | 156 passed | 0 skipped | 0 failed
   OpenVX Vision Score: 1586.05 MP/s (156 benchmarks)
+  OpenVX Framework Score: 4.872x (geomean of 18 framework metrics)
   vision Conformance: PASS (41/41)
   vision Top-5 Fastest:
     1. Not                           26835.8 MP/s (graph, FHD)
@@ -226,6 +293,7 @@ Each `GraphDividend_*` case times the same chain three ways and emits five metri
 - **OpenVX Vision Score** — Geometric mean of MP/s across all passing graph-mode vision benchmarks
 - **Enhanced Vision Score** — Geometric mean when enhanced_vision benchmarks are included
 - **Category Sub-Scores** — Per-category geometric mean (pixelwise, filters, color, etc.)
+- **OpenVX Framework Score** — Equal-weight geometric mean (dimensionless, ×) of all `graph_speedup`, `virtual_dividend`, `parallelism_efficiency`, and `concurrency_speedup` values produced by the framework benchmarks. **>1.0 means the OpenVX graph framework adds aggregate value over a kernel-only baseline.** Lower-is-better metrics (e.g. `verify_per_node_ms`, `async_overhead_ratio`) are intentionally excluded so the score has a single monotonic interpretation. Only emitted when framework benchmarks are run (`--feature-set framework` or `--feature-set everything`).
 
 ### Conformance Summary
 
@@ -279,6 +347,7 @@ python3 scripts/compare_reports.py results_vendor_a/benchmark_results.json \
 | **Sustained Ratio** | `min_ns / median_ns`. Values near 1.0 indicate consistent performance; lower values suggest variance from caching, scheduling, or thermal effects. |
 | **Scaling Efficiency** | `(MP/s at high res) / (MP/s at low res)`. 1.0 = perfect scaling; values below 1.0 indicate memory or bandwidth bottlenecks at higher resolutions. |
 | **Vision Score** | Geometric mean of MP/s across all passing graph-mode vision benchmarks. Single-number summary for cross-vendor comparison. |
+| **Framework Score** | Equal-weight geometric mean (×, dimensionless) of all `graph_speedup`, `virtual_dividend`, `parallelism_efficiency`, and `concurrency_speedup` values produced by framework benchmarks. >1.0 means the OpenVX graph framework adds aggregate value over a kernel-only baseline. Only emitted when framework benchmarks are run. |
 | **Stability Warning** | Flagged when CV% exceeds the stability threshold (default: 15%). Indicates the result may not be reliable — increase iterations or reduce system load. |
 | **Conformance** | Whether all available kernels in a feature set produced valid graph-mode results. PASS = all kernels benchmarked successfully. |
 
