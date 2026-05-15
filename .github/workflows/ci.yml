@@ -19,16 +19,20 @@ concurrency:
 # ============================================================================
 # Architecture
 #
-# Phase 1 (parallel) — three independent build jobs, one per OpenVX
-# implementation. Each job:
-#   1. Builds the implementation from source.
-#   2. Stages a self-contained artifact: <impl>-stage/lib + <impl>-stage/include.
-#   3. Builds openvx-mark against the just-built impl.
-#   4. Runs a quick smoke benchmark (`--feature-set everything --resolution VGA`)
-#      as a "local unit test" — catches build-link breakage and missing-symbol
-#      issues immediately, scoped to the specific impl, without waiting for the
-#      slower comparison job downstream.
-#   5. Uploads the staged artifact for the comparison job to consume.
+# Phase 1 (parallel) — four independent build jobs:
+#   * Three OpenVX-impl jobs (MIVisionX, Khronos sample, rustVX). Each:
+#       1. Builds the implementation from source.
+#       2. Stages a self-contained artifact: <impl>-stage/lib + <impl>-stage/include.
+#       3. Builds openvx-mark against the just-built impl.
+#       4. Runs a quick smoke benchmark (`--feature-set everything --resolution VGA`)
+#          as a "local unit test" — catches build-link breakage and missing-symbol
+#          issues immediately, scoped to the specific impl, without waiting for
+#          the slower comparison job downstream.
+#       5. Uploads the staged artifact for the comparison job to consume.
+#   * One OpenCV-baseline job (opencv-mark companion binary). Differs from
+#     the OpenVX jobs because OpenCV is apt-installable and opencv-mark has
+#     no OpenVX dependency — see the build-opencv job below for the shape.
+#     Stages its smoke JSON directly (no impl tarball needed).
 #
 # Phase 2 (single job, depends on all three) — comparison.
 #   1. Downloads all three impl artifacts onto a single runner.
@@ -364,6 +368,79 @@ jobs:
         with:
           name: smoke-results-rustvx
           path: build-smoke/smoke-results/
+          if-no-files-found: ignore
+
+  # --------------------------------------------------------------------------
+  # Phase 1 — OpenCV baseline (companion binary `opencv-mark`)
+  #
+  # OpenCV is the de facto vision baseline. This job exists so we can answer
+  # "does adopting OpenVX actually pay off vs the cv:: code I already have?"
+  # at the per-kernel level, on the same CI hardware as every OpenVX impl.
+  #
+  # Differs from the OpenVX impl jobs above in two ways:
+  #   1. OpenCV is apt-installable (no from-source build), so the job is
+  #      much shorter — install, configure parent CMake, build, smoke.
+  #   2. The artifact this job stages is a JSON benchmark report (not a
+  #      libopenvx.so + headers tarball), because there is no separate
+  #      openvx-mark-vs-OpenCV link step — opencv-mark IS the binary that
+  #      runs the OpenCV-side measurements. The downstream comparison job
+  #      consumes this JSON directly alongside the OpenVX impl JSONs.
+  # --------------------------------------------------------------------------
+  build-opencv:
+    name: Build opencv-mark (OpenCV baseline) + smoke test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout openvx-mark
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (OpenCV 4 from apt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3 \
+            libopencv-dev
+          # Sanity-print the OpenCV version that pkg-config sees so
+          # comparison reports later can be cross-referenced against
+          # exactly this version string.
+          pkg-config --modversion opencv4 || true
+
+      - name: Configure & build opencv-mark
+        run: |
+          set -euo pipefail
+          mkdir -p build-opencv
+          cd build-opencv
+          # Parent CMake auto-includes opencv-mark/ when OpenCV is found.
+          # No OPENVX_* flags needed — opencv-mark has no OpenVX dep.
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build . --target opencv-mark -j$(nproc)
+          # Fail loudly if the binary somehow didn't get produced (e.g.
+          # OpenCV detection silently no-op'd). This is the exact failure
+          # mode that PR #1's first CI run was missing.
+          test -x opencv-mark/opencv-mark \
+            || { echo "ERROR: opencv-mark binary not built — OpenCV likely not detected by CMake"; exit 1; }
+          # `--help` doubles as a version probe — it prints the opencv-mark
+          # version line and the linked OpenCV version up top. PR1's CLI
+          # does not implement a dedicated `--version` flag yet.
+          ./opencv-mark/opencv-mark --help | head -3
+
+      # Smoke covers the PR1 sentinel kernel set. Same shape as the
+      # OpenVX-impl smokes (VGA × 5 iters, 1 warmup) so timing noise
+      # stays comparable. Not continue-on-error — opencv-mark has no
+      # impl-side quirks to tolerate; if a kernel breaks here it's our
+      # bug.
+      - name: Run smoke benchmark (vision, VGA × 5 iters)
+        run: |
+          set -eo pipefail
+          cd build-opencv
+          ./opencv-mark/opencv-mark --feature-set vision \
+            --resolution VGA --iterations 5 --warmup 1 \
+            --output-dir smoke-results
+
+      - name: Upload opencv-mark smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results-opencv
+          path: build-opencv/smoke-results/
           if-no-files-found: ignore
 
   # --------------------------------------------------------------------------

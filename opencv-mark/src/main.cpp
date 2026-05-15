@@ -17,6 +17,7 @@
 #include "opencv_verify.h"
 #include "system_info.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <opencv2/core.hpp>
 #include <set>
@@ -81,8 +82,12 @@ bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
+            // `--help` is a successful invocation by UNIX convention —
+            // exit 0 directly so CI steps using `set -e` don't trip on
+            // it. parseArgs returning `false` is reserved for actual
+            // parse failures (mapped to exit 1 by main).
             printUsage(argv[0]);
-            return false;
+            std::exit(0);
         } else if (arg == "--feature-set" && i + 1 < argc) {
             // PR1 only supports the "vision" feature set on the OpenCV
             // side; "framework" and "enhanced_vision" are intentionally
