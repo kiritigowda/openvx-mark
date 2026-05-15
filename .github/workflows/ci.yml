@@ -86,8 +86,13 @@ jobs:
           mkdir -p mivisionx-stage/lib mivisionx-stage/include
           LIB_SRC=$(dirname "$(find /tmp/mivisionx-install -name 'libopenvx.so' | head -1)")
           echo "MIVisionX libraries discovered in: $LIB_SRC"
-          cp "$LIB_SRC"/libopenvx*.so mivisionx-stage/lib/
-          cp "$LIB_SRC"/libvxu*.so mivisionx-stage/lib/ 2>/dev/null || true
+          # Copy ALL libopenvx* / libvxu* entries (libopenvx.so symlink,
+          # libopenvx.so.1 SONAME symlink, libopenvx.so.X.Y.Z real file)
+          # preserving symlinks (-P) so ld.so can follow the SONAME chain.
+          # Without versioned files the linker reports
+          # "libopenvx.so.1: cannot open shared object file".
+          find "$LIB_SRC" -maxdepth 1 -name 'libopenvx*' -exec cp -P {} mivisionx-stage/lib/ \;
+          find "$LIB_SRC" -maxdepth 1 -name 'libvxu*'    -exec cp -P {} mivisionx-stage/lib/ \;
           cp -r /tmp/mivisionx-install/include/mivisionx/. mivisionx-stage/include/
           echo "--- staged lib ---"
           ls -la mivisionx-stage/lib
@@ -110,16 +115,29 @@ jobs:
             ..
           cmake --build . -j$(nproc)
 
-      - name: Run smoke benchmark (kernel + framework, VGA × 5 iters)
+      # Smoke covers the `vision` + `framework` feature sets — i.e.
+      # the comparison-stable subset that all three impls support
+      # uniformly. `enhanced_vision` is excluded because at least one
+      # impl (Khronos sample) segfaults inside Tensor* kernels, and
+      # since openvx-mark only writes its JSON at end-of-run a mid-bench
+      # crash takes out the entire signal. Re-enable per-impl gating
+      # later when those impl quirks are sorted upstream.
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+        # Smoke is advisory — if a specific impl crashes inside a
+        # specific kernel the artifact upload (which the compare job
+        # depends on) must still happen so vendor-vs-vendor signal
+        # isn't lost.
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd build-smoke
           export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
-          ./openvx-mark --feature-set everything \
+          ./openvx-mark --feature-set vision,framework \
             --resolution VGA --iterations 5 --warmup 1 \
             --output-dir smoke-results
 
       - name: Upload MIVisionX artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: impl-mivisionx
@@ -164,8 +182,10 @@ jobs:
           mkdir -p khronos-stage/lib khronos-stage/include
           LIB_SRC=$(dirname "$(find /tmp/khronos-src -name 'libopenvx.so' -not -path '*/build/*' | head -1)")
           echo "Khronos libraries discovered in: $LIB_SRC"
-          cp "$LIB_SRC"/libopenvx*.so khronos-stage/lib/
-          cp "$LIB_SRC"/libvxu*.so khronos-stage/lib/ 2>/dev/null || true
+          # Same approach as MIVisionX: copy all libopenvx* / libvxu* entries
+          # preserving symlinks so ld.so can follow the SONAME chain.
+          find "$LIB_SRC" -maxdepth 1 -name 'libopenvx*' -exec cp -P {} khronos-stage/lib/ \;
+          find "$LIB_SRC" -maxdepth 1 -name 'libvxu*'    -exec cp -P {} khronos-stage/lib/ \;
           cp -r /tmp/khronos-src/api-docs/include/. khronos-stage/include/
           echo "--- staged lib ---"
           ls -la khronos-stage/lib
@@ -188,16 +208,20 @@ jobs:
             ..
           cmake --build . -j$(nproc)
 
-      - name: Run smoke benchmark (kernel + framework, VGA × 5 iters)
+      # Smoke is restricted to the `vision` + `framework` subset for
+      # the same reason as the MIVisionX smoke — see comment there.
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd build-smoke
           export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
-          ./openvx-mark --feature-set everything \
+          ./openvx-mark --feature-set vision,framework \
             --resolution VGA --iterations 5 --warmup 1 \
             --output-dir smoke-results
 
       - name: Upload Khronos sample artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: impl-khronos-sample
@@ -314,16 +338,20 @@ jobs:
             ..
           cmake --build . -j$(nproc)
 
-      - name: Run smoke benchmark (kernel + framework, VGA × 5 iters)
+      # Smoke is restricted to the `vision` + `framework` subset for
+      # the same reason as the MIVisionX smoke — see comment there.
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd build-smoke
           export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
-          ./openvx-mark --feature-set everything \
+          ./openvx-mark --feature-set vision,framework \
             --resolution VGA --iterations 5 --warmup 1 \
             --output-dir smoke-results
 
       - name: Upload rustVX artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: impl-rustvx
@@ -407,8 +435,20 @@ jobs:
           done
 
       # ----- Per-impl build + benchmark (FHD, 20 iter, 5 warmup) -----
+      #
+      # Each per-impl bench uses `if: always() && steps.detect...` because
+      # GitHub Actions treats any explicit `if:` without `always()` as
+      # implicit `success()` — meaning a crash in MIVisionX bench would
+      # skip the Khronos / rustVX bench steps entirely and we'd lose all
+      # comparison signal. With `always()` the three benches stay
+      # independent and the comparison job downstream handles whichever
+      # JSON files actually got produced.
+      #
+      # Feature set is `vision,framework` (the comparison-stable subset
+      # — see the smoke step comments for why `enhanced_vision` is held
+      # back for now).
       - name: Build & bench against MIVisionX
-        if: steps.detect.outputs.mivisionx == 'true'
+        if: always() && steps.detect.outputs.mivisionx == 'true'
         run: |
           set -euo pipefail
           mkdir -p build-mivisionx
@@ -420,12 +460,12 @@ jobs:
             ..
           cmake --build . -j$(nproc)
           export LD_LIBRARY_PATH=${{ github.workspace }}/impl/mivisionx/lib:${LD_LIBRARY_PATH:-}
-          ./openvx-mark --feature-set everything \
+          ./openvx-mark --feature-set vision,framework \
             --resolution FHD --iterations 20 --warmup 5 \
             --output-dir results
 
       - name: Build & bench against Khronos sample
-        if: steps.detect.outputs.khronos == 'true'
+        if: always() && steps.detect.outputs.khronos == 'true'
         run: |
           set -euo pipefail
           mkdir -p build-khronos
@@ -437,12 +477,12 @@ jobs:
             ..
           cmake --build . -j$(nproc)
           export LD_LIBRARY_PATH=${{ github.workspace }}/impl/khronos/lib:${LD_LIBRARY_PATH:-}
-          ./openvx-mark --feature-set everything \
+          ./openvx-mark --feature-set vision,framework \
             --resolution FHD --iterations 20 --warmup 5 \
             --output-dir results
 
       - name: Build & bench against rustVX
-        if: steps.detect.outputs.rustvx == 'true'
+        if: always() && steps.detect.outputs.rustvx == 'true'
         run: |
           set -euo pipefail
           mkdir -p build-rustvx
@@ -454,7 +494,7 @@ jobs:
             ..
           cmake --build . -j$(nproc)
           export LD_LIBRARY_PATH=${{ github.workspace }}/impl/rustvx/lib:${LD_LIBRARY_PATH:-}
-          ./openvx-mark --feature-set everything \
+          ./openvx-mark --feature-set vision,framework \
             --resolution FHD --iterations 20 --warmup 5 \
             --output-dir results
 
