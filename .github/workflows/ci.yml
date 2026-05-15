@@ -50,6 +50,15 @@ jobs:
           export LD_LIBRARY_PATH=${{ steps.khronos.outputs.lib_dir }}:$LD_LIBRARY_PATH
           ./openvx-mark --resolution VGA --iterations 10 --warmup 3
 
+      - name: Run framework benchmarks (Khronos)
+        if: always()
+        run: |
+          cd build-khronos
+          export LD_LIBRARY_PATH=${{ steps.khronos.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --feature-set framework --resolution VGA \
+            --iterations 10 --warmup 3 --quiet \
+            --output-dir framework_results 2>&1 | tee ../khronos-framework.log
+
       # --- MIVisionX (AMD OpenVX) ---
       - name: Build MIVisionX (CPU backend)
         run: |
@@ -81,6 +90,15 @@ jobs:
           export LD_LIBRARY_PATH=${{ steps.mivisionx.outputs.lib_dir }}:$LD_LIBRARY_PATH
           ./openvx-mark --resolution VGA --iterations 10 --warmup 3
 
+      - name: Run framework benchmarks (MIVisionX)
+        if: always()
+        run: |
+          cd build-mivisionx
+          export LD_LIBRARY_PATH=${{ steps.mivisionx.outputs.lib_dir }}:$LD_LIBRARY_PATH
+          ./openvx-mark --feature-set framework --resolution VGA \
+            --iterations 10 --warmup 3 --quiet \
+            --output-dir framework_results 2>&1 | tee ../mivisionx-framework.log
+
       # --- Compare Results ---
       - name: Compare benchmark results
         run: |
@@ -102,6 +120,32 @@ jobs:
             cat comparison.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Post framework benchmarks to job summary
+        if: always()
+        run: |
+          {
+            echo "## Framework Benchmarks"
+            echo ""
+            for vendor in khronos mivisionx; do
+              log="${vendor}-framework.log"
+              if [ -f "$log" ] && grep -q "Framework Benchmarks" "$log"; then
+                echo "### ${vendor}"
+                echo ""
+                echo '```'
+                # Print from the "Framework Benchmarks" header line through
+                # the closing ===== separator that the binary always emits.
+                awk '/Framework Benchmarks \([0-9]+\):/{flag=1} flag' "$log"
+                echo '```'
+                echo ""
+              else
+                echo "### ${vendor}"
+                echo ""
+                echo "_No framework benchmarks registered (or all skipped) at this commit._"
+                echo ""
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload Khronos results
         if: always()
         uses: actions/upload-artifact@v4
@@ -116,6 +160,22 @@ jobs:
         with:
           name: benchmark-results-mivisionx-cpu
           path: build-mivisionx/benchmark_results/
+          if-no-files-found: ignore
+
+      - name: Upload Khronos framework results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: framework-results-khronos-sample
+          path: build-khronos/framework_results/
+          if-no-files-found: ignore
+
+      - name: Upload MIVisionX framework results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: framework-results-mivisionx-cpu
+          path: build-mivisionx/framework_results/
           if-no-files-found: ignore
 
       - name: Upload comparison report
