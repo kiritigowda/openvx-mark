@@ -120,6 +120,7 @@ cmake --build .
 | `--seed N` | PRNG seed for reproducible test data | `42` |
 | `--stability-threshold N` | CV% threshold for stability warnings | `15` |
 | `--max-retries N` | Max retries for unstable benchmarks (2x iterations each retry) | `0` |
+| `--framework-chain-depths N,N,...` | Chain depths swept by `VerifyChain_Box3x3` | `1,4,16,64` |
 
 #### Output
 
@@ -178,6 +179,7 @@ Framework benchmarks are **opt-in** — they are not in the default run and do n
 |:---|:---|:---|
 | `GraphDividend_Box3x3_x4` | Box3x3 × 4 | Pure framework overhead (same kernel, isolates orchestration cost) |
 | `GraphDividend_MixedFilters` | Gaussian3x3 → Box3x3 → Median3x3 → Erode3x3 | Realistic 4-stage filter pipeline |
+| `VerifyChain_Box3x3` | Box3x3 × N (sweeps `--framework-chain-depths`, default 1, 4, 16, 64) | Graph build / verify cost vs N nodes; first-process lazy-alloc tax |
 
 Each `GraphDividend_*` case times the same chain three ways and emits five metrics:
 
@@ -188,6 +190,20 @@ Each `GraphDividend_*` case times the same chain three ways and emits five metri
 | `graph_virtual_ms` | ms | One verified graph; intermediates are `vxCreateVirtualImage` (runtime is free to fuse / alias / tile) |
 | `graph_speedup` | × | `sum_immediate_ms / graph_virtual_ms`. **>1 means the graph form beats summed immediate calls** — the headline framework dividend |
 | `virtual_dividend` | × | `graph_real_ms / graph_virtual_ms`. **>1 means virtual intermediates help** (runtime did something useful with the freedom) |
+
+`VerifyChain_Box3x3` rebuilds a chain of N Box3x3 nodes for each requested depth and reports per-N timings plus three aggregate metrics:
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `n{N}_create_ms` | ms | `vxCreateGraph` + N node creations at depth N |
+| `n{N}_verify_ms` | ms | `vxVerifyGraph` cost at depth N |
+| `n{N}_first_process_ms` | ms | First `vxProcessGraph` call (often pays a one-shot lazy-allocation / kernel-init tax) |
+| `n{N}_steady_process_ms` | ms | Median `vxProcessGraph` cost after warmup |
+| `verify_per_node_ms` | ms/node | Linear-regression slope of verify cost over N — the per-node verify tax |
+| `verify_intercept_ms` | ms | Linear-regression intercept — fixed verify cost independent of chain length |
+| `first_process_overhead_ms` | ms | `first_process_ms - steady_process_ms` at the deepest chain — the cost of the first execution beyond steady state |
+
+Use `--framework-chain-depths 1,4,16,64,256` to sweep custom depths (defaults to `1,4,16,64`).
 
 ## Output
 
