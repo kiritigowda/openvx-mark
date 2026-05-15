@@ -379,6 +379,250 @@ BenchmarkResult runParallelBranches(vx_context ctx, const Resolution& res,
     return r;
 }
 
+// A pre-built and verified Box3x3 chain graph plus its observable input /
+// output handles. Lifetime is owned by the caller's ResourceTracker.
+struct AsyncChainGraph {
+    vx_graph graph = nullptr;
+    vx_image input = nullptr;
+    vx_image output = nullptr;
+    bool ok = false;
+};
+
+AsyncChainGraph buildBoxChainGraph(vx_context ctx,
+                                   uint32_t width, uint32_t height,
+                                   int n_nodes,
+                                   ResourceTracker& tracker,
+                                   TestDataGenerator& gen) {
+    AsyncChainGraph ag;
+    if (n_nodes < 1) return ag;
+
+    ag.input = gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8);
+    if (vxGetStatus((vx_reference)ag.input) != VX_SUCCESS) return ag;
+    tracker.trackImage(ag.input);
+
+    ag.output = vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8);
+    if (vxGetStatus((vx_reference)ag.output) != VX_SUCCESS) return ag;
+    tracker.trackImage(ag.output);
+
+    ag.graph = vxCreateGraph(ctx);
+    if (vxGetStatus((vx_reference)ag.graph) != VX_SUCCESS) return ag;
+    tracker.trackGraph(ag.graph);
+
+    vx_image src = ag.input;
+    for (int i = 0; i < n_nodes; i++) {
+        bool is_last = (i + 1 == n_nodes);
+        vx_image dst = is_last
+            ? ag.output
+            : vxCreateVirtualImage(ag.graph, width, height, VX_DF_IMAGE_U8);
+        if (vxGetStatus((vx_reference)dst) != VX_SUCCESS) return ag;
+        if (!is_last) tracker.trackImage(dst);
+
+        vx_node node = vxBox3x3Node(ag.graph, src, dst);
+        if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return ag;
+        tracker.trackNode(node);
+
+        src = dst;
+    }
+
+    if (vxVerifyGraph(ag.graph) != VX_SUCCESS) return ag;
+    ag.ok = true;
+    return ag;
+}
+
+// Single-graph async overhead: for one Box3x3-chain graph, time
+// vxProcessGraph (sync) and vxScheduleGraph + vxWaitGraph (async) and
+// report the ratio. Ideally async_overhead_ratio is close to 1.0; values
+// significantly > 1 mean the implementation pays a real per-call tax for
+// the async API. Below 1 is unusual but not impossible (e.g. async path
+// avoids extra copies) and is also useful diagnostic data.
+BenchmarkResult runAsyncSingle(vx_context ctx, const Resolution& res,
+                               const BenchmarkConfig& cfg) {
+    BenchmarkResult r;
+    r.iterations = cfg.iterations;
+    r.warmup = cfg.warmup;
+
+    constexpr int kNodes = 4;
+    TestDataGenerator gen(cfg.seed);
+    ResourceTracker tracker;
+
+    AsyncChainGraph g = buildBoxChainGraph(ctx, res.width, res.height,
+                                           kNodes, tracker, gen);
+    if (!g.ok) {
+        r.supported = false;
+        r.skip_reason = "failed to build async chain graph";
+        return r;
+    }
+
+    BenchmarkTimer timer;
+
+    for (int i = 0; i < cfg.warmup; i++) vxProcessGraph(g.graph);
+
+    std::vector<double> sync_samples;
+    sync_samples.reserve(cfg.iterations);
+    for (int i = 0; i < cfg.iterations; i++) {
+        timer.start();
+        if (vxProcessGraph(g.graph) != VX_SUCCESS) {
+            r.supported = false;
+            r.skip_reason = "vxProcessGraph failed";
+            return r;
+        }
+        timer.stop();
+        sync_samples.push_back(timer.elapsed_ns());
+    }
+    double sync_ns = BenchmarkStats::compute(sync_samples).median_ns;
+
+    for (int i = 0; i < cfg.warmup; i++) {
+        if (vxScheduleGraph(g.graph) != VX_SUCCESS) break;
+        vxWaitGraph(g.graph);
+    }
+
+    std::vector<double> async_samples;
+    async_samples.reserve(cfg.iterations);
+    for (int i = 0; i < cfg.iterations; i++) {
+        timer.start();
+        vx_status s = vxScheduleGraph(g.graph);
+        if (s == VX_SUCCESS) s = vxWaitGraph(g.graph);
+        timer.stop();
+        if (s != VX_SUCCESS) {
+            r.supported = false;
+            r.skip_reason = "vxScheduleGraph/vxWaitGraph failed";
+            return r;
+        }
+        async_samples.push_back(timer.elapsed_ns());
+    }
+    double async_ns = BenchmarkStats::compute(async_samples).median_ns;
+
+    if (sync_ns <= 0.0 || async_ns <= 0.0) {
+        r.supported = false;
+        r.skip_reason = "invalid timing";
+        return r;
+    }
+
+    r.framework_metrics = {
+        {"sync_ms",              sync_ns  / 1e6,     "ms", false},
+        {"async_ms",             async_ns / 1e6,     "ms", false},
+        // Ratio close to 1.0 = no tax; >1 = async API costs more than sync.
+        {"async_overhead_ratio", async_ns / sync_ns, "x",  false},
+    };
+
+    r.wall_clock.median_ns = sync_ns;
+    r.wall_clock.mean_ns = sync_ns;
+    r.wall_clock.min_ns = sync_ns;
+    r.wall_clock.max_ns = sync_ns;
+    r.wall_clock.sample_count = static_cast<size_t>(cfg.iterations);
+    r.megapixels_per_sec = BenchmarkStats::computeThroughput(
+        res.width, res.height, sync_ns);
+    return r;
+}
+
+// Multi-graph concurrency: build N independent Box3x3-chain graphs (no
+// shared data) and time them two ways:
+//   sync_sequential_ms   vxProcessGraph(g0); vxProcessGraph(g1); ...
+//   async_concurrent_ms  vxScheduleGraph(g0); ...; vxWaitGraph(g0); ...
+//
+// The async form gives the runtime the opportunity to overlap independent
+// graphs. concurrency_speedup > 1 means the runtime actually does so;
+// speedup ~ 1 means it serializes regardless of the API used.
+BenchmarkResult runAsyncConcurrent(vx_context ctx, const Resolution& res,
+                                   const BenchmarkConfig& cfg) {
+    BenchmarkResult r;
+    r.iterations = cfg.iterations;
+    r.warmup = cfg.warmup;
+
+    constexpr int kGraphs = 2;
+    constexpr int kNodes = 4;
+    TestDataGenerator gen(cfg.seed);
+    ResourceTracker tracker;
+
+    std::vector<AsyncChainGraph> graphs;
+    graphs.reserve(kGraphs);
+    for (int i = 0; i < kGraphs; i++) {
+        AsyncChainGraph g = buildBoxChainGraph(ctx, res.width, res.height,
+                                               kNodes, tracker, gen);
+        if (!g.ok) {
+            r.supported = false;
+            r.skip_reason = "failed to build async chain graph";
+            return r;
+        }
+        graphs.push_back(g);
+    }
+
+    BenchmarkTimer timer;
+
+    for (int i = 0; i < cfg.warmup; i++) {
+        for (auto& g : graphs) vxProcessGraph(g.graph);
+    }
+
+    std::vector<double> sync_samples;
+    sync_samples.reserve(cfg.iterations);
+    for (int i = 0; i < cfg.iterations; i++) {
+        timer.start();
+        for (auto& g : graphs) {
+            if (vxProcessGraph(g.graph) != VX_SUCCESS) {
+                r.supported = false;
+                r.skip_reason = "vxProcessGraph failed";
+                return r;
+            }
+        }
+        timer.stop();
+        sync_samples.push_back(timer.elapsed_ns());
+    }
+    double sync_ns = BenchmarkStats::compute(sync_samples).median_ns;
+
+    for (int i = 0; i < cfg.warmup; i++) {
+        for (auto& g : graphs) vxScheduleGraph(g.graph);
+        for (auto& g : graphs) vxWaitGraph(g.graph);
+    }
+
+    std::vector<double> async_samples;
+    async_samples.reserve(cfg.iterations);
+    for (int i = 0; i < cfg.iterations; i++) {
+        timer.start();
+        for (auto& g : graphs) {
+            if (vxScheduleGraph(g.graph) != VX_SUCCESS) {
+                r.supported = false;
+                r.skip_reason = "vxScheduleGraph failed";
+                return r;
+            }
+        }
+        for (auto& g : graphs) {
+            if (vxWaitGraph(g.graph) != VX_SUCCESS) {
+                r.supported = false;
+                r.skip_reason = "vxWaitGraph failed";
+                return r;
+            }
+        }
+        timer.stop();
+        async_samples.push_back(timer.elapsed_ns());
+    }
+    double async_ns = BenchmarkStats::compute(async_samples).median_ns;
+
+    if (sync_ns <= 0.0 || async_ns <= 0.0) {
+        r.supported = false;
+        r.skip_reason = "invalid timing";
+        return r;
+    }
+
+    double speedup = sync_ns / async_ns;
+
+    r.framework_metrics = {
+        {"graphs",              static_cast<double>(kGraphs), "count", false},
+        {"sync_sequential_ms",  sync_ns  / 1e6,               "ms",    false},
+        {"async_concurrent_ms", async_ns / 1e6,               "ms",    false},
+        // >1 = runtime overlapped graphs; ~1 = no concurrency exploited.
+        {"concurrency_speedup", speedup,                      "x",     true},
+    };
+
+    r.wall_clock.median_ns = async_ns;
+    r.wall_clock.mean_ns = async_ns;
+    r.wall_clock.min_ns = async_ns;
+    r.wall_clock.max_ns = async_ns;
+    r.wall_clock.sample_count = static_cast<size_t>(cfg.iterations);
+    r.megapixels_per_sec = BenchmarkStats::computeThroughput(
+        res.width, res.height, async_ns);
+    return r;
+}
+
 // Per-N timings collected by runVerifyChain; one of these is produced per
 // chain depth and feeds both the per-N metrics and the slope regression.
 struct VerifySample {
@@ -682,6 +926,34 @@ std::vector<BenchmarkCase> registerFrameworkBenchmarks() {
         bc.framework_run = [](vx_context ctx, const Resolution& res,
                               const BenchmarkConfig& cfg) -> BenchmarkResult {
             return runParallelBranches(ctx, res, cfg);
+        };
+        cases.push_back(bc);
+    }
+
+    {
+        BenchmarkCase bc;
+        bc.name = "Async_Single_Box3x3_x4";
+        bc.category = "framework_async";
+        bc.feature_set = "framework";
+        bc.kernel_enum = VX_KERNEL_BOX_3x3;
+        bc.required_kernels = {VX_KERNEL_BOX_3x3};
+        bc.framework_run = [](vx_context ctx, const Resolution& res,
+                              const BenchmarkConfig& cfg) -> BenchmarkResult {
+            return runAsyncSingle(ctx, res, cfg);
+        };
+        cases.push_back(bc);
+    }
+
+    {
+        BenchmarkCase bc;
+        bc.name = "Async_Concurrent_Box3x3_x2";
+        bc.category = "framework_async";
+        bc.feature_set = "framework";
+        bc.kernel_enum = VX_KERNEL_BOX_3x3;
+        bc.required_kernels = {VX_KERNEL_BOX_3x3};
+        bc.framework_run = [](vx_context ctx, const Resolution& res,
+                              const BenchmarkConfig& cfg) -> BenchmarkResult {
+            return runAsyncConcurrent(ctx, res, cfg);
         };
         cases.push_back(bc);
     }
