@@ -320,7 +320,8 @@ int main(int argc, char* argv[]) {
 
     // Generate reports
     printf("\n[5/5] Generating reports...\n");
-    BenchmarkReport report(sys_info, config, registry);
+    BenchmarkCatalog catalog = registry.snapshot();
+    BenchmarkReport report(sys_info, config, catalog);
     report.generate(results);
 
     // Summary
@@ -360,7 +361,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Feature 7: Conformance per feature set
-    auto conformance = BenchmarkReport::checkConformance(results, registry);
+    auto conformance = BenchmarkReport::checkConformance(results, catalog);
     for (const auto& cr : conformance) {
         if (cr.total > 0) {
             printf("  %s Conformance: %s (%d/%d",

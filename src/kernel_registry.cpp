@@ -175,3 +175,20 @@ std::vector<KernelRegistry::FeatureSetSummary> KernelRegistry::featureSetSummary
     }
     return result;
 }
+
+BenchmarkCatalog KernelRegistry::snapshot() const {
+    BenchmarkCatalog snap;
+    snap.available_count = availableCount();
+    snap.total_count = totalCount();
+
+    for (const auto& fs : featureSetSummary()) {
+        snap.feature_sets.push_back({fs.feature_set, fs.available, fs.total});
+    }
+    for (const auto& cat : categorySummary()) {
+        snap.categories.push_back({cat.category, cat.available, cat.total});
+    }
+    for (const auto& [_, info] : kernels_) {
+        snap.kernels.push_back({info.name, info.feature_set, info.available});
+    }
+    return snap;
+}

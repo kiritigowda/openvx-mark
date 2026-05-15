@@ -52,6 +52,7 @@
 #include "benchmark_runner.h"
 #include "benchmark_stats.h"
 #include "benchmark_timer.h"
+#include "openvx_perf_query.h"
 #include "resource_tracker.h"
 #include "test_data_generator.h"
 #include <VX/vx.h>
@@ -274,14 +275,14 @@ VirtualChainPerf timeVirtualChainWithNodePerf(vx_context ctx,
     // the same set of runs, the ratio between them is unaffected by warmup
     // bias.
     vx_perf_t graph_perf = {};
-    if (BenchmarkTimer::queryGraphPerf(graph, graph_perf)) {
+    if (openvx_perf::queryGraphPerf(graph, graph_perf)) {
         out.graph_perf_avg_ns = static_cast<double>(graph_perf.avg);
     }
 
     out.node_count = static_cast<int>(nodes.size());
     for (vx_node n : nodes) {
         vx_perf_t np = {};
-        if (BenchmarkTimer::queryNodePerf(n, np)) {
+        if (openvx_perf::queryNodePerf(n, np)) {
             out.node_perf_sum_avg_ns += static_cast<double>(np.avg);
             out.nodes_with_perf++;
         }
