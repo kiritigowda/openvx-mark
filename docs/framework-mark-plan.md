@@ -43,7 +43,7 @@ Each runs across the same `--resolution` set as kernels, so results scale with i
 
 ## 4. v2 Backlog (later, separate PRs)
 
-- Per-node `VX_NODE_PERFORMANCE` attribution (infer fusion when `sum(node_perf) > graph_perf`).
+- ~~Per-node `VX_NODE_PERFORMANCE` attribution (infer fusion when `sum(node_perf) > graph_perf`).~~ — landed in PR #7 as `node_count` / `node_sum_ms` / `graph_perf_ms` / `fusion_ratio` on `graph_dividend` results.
 - `vxMapImagePatch` / `vxUnmapImagePatch` round-trip cost (host↔device tax).
 - User-kernel dispatch tax via `vxAddUserKernel` no-op.
 - Context lifecycle stress (`vxCreateContext` / `vxReleaseContext` × N; same graph built/torn down × N).

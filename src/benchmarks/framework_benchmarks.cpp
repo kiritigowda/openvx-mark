@@ -184,6 +184,112 @@ double timeGraphChain(vx_context ctx, uint32_t width, uint32_t height,
     return BenchmarkStats::compute(samples).median_ns;
 }
 
+// Result of timing a virtual chain while also collecting per-node and
+// graph-level VX_*_PERFORMANCE counters. Used to surface fusion / kernel
+// overlap behavior in the graph_dividend scenario.
+struct VirtualChainPerf {
+    double median_wall_ns = 0;        // host-side median wall-clock per vxProcessGraph
+    double graph_perf_avg_ns = 0;     // VX_GRAPH_PERFORMANCE.avg (runtime-reported)
+    double node_perf_sum_avg_ns = 0;  // sum over nodes of VX_NODE_PERFORMANCE.avg
+    int node_count = 0;
+    int nodes_with_perf = 0;          // nodes that reported a populated vx_perf_t
+};
+
+// Build the same virtual-intermediate chain that timeGraphChain(use_virtual=true)
+// builds, time it the same way, and additionally query VX_GRAPH_PERFORMANCE on
+// the graph and VX_NODE_PERFORMANCE on every node after the iteration loop.
+//
+// The intent is to compare graph_perf.avg against the sum of node_perf.avg:
+//   * sum_node ≈ graph_perf            -> runtime ran each node back-to-back,
+//                                         no fusion, no overlap.
+//   * sum_node >  graph_perf            -> graph completes faster than the sum
+//                                         of node times: the runtime fused,
+//                                         pipelined, or overlapped nodes — the
+//                                         graph framework added value the
+//                                         per-node accounting cannot.
+//   * sum_node <  graph_perf            -> per-node accounting under-reports
+//                                         (e.g. nodes don't include shared
+//                                         setup); rare but possible.
+VirtualChainPerf timeVirtualChainWithNodePerf(vx_context ctx,
+                                              uint32_t width, uint32_t height,
+                                              const std::vector<ChainStage>& stages,
+                                              int warmup, int iterations,
+                                              TestDataGenerator& gen) {
+    VirtualChainPerf out;
+    ResourceTracker tracker;
+
+    vx_graph graph = vxCreateGraph(ctx);
+    if (vxGetStatus((vx_reference)graph) != VX_SUCCESS) return out;
+    tracker.trackGraph(graph);
+
+    vx_image input = gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8);
+    if (vxGetStatus((vx_reference)input) != VX_SUCCESS) return out;
+    tracker.trackImage(input);
+
+    vx_image output = vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8);
+    if (vxGetStatus((vx_reference)output) != VX_SUCCESS) return out;
+    tracker.trackImage(output);
+
+    std::vector<vx_node> nodes;
+    nodes.reserve(stages.size());
+
+    vx_image src = input;
+    for (size_t i = 0; i < stages.size(); i++) {
+        bool is_last = (i + 1 == stages.size());
+        vx_image dst;
+        if (is_last) {
+            dst = output;
+        } else {
+            dst = vxCreateVirtualImage(graph, width, height, VX_DF_IMAGE_U8);
+        }
+        if (vxGetStatus((vx_reference)dst) != VX_SUCCESS) return out;
+        if (!is_last) tracker.trackImage(dst);
+
+        vx_node node = stages[i].make_node(graph, src, dst);
+        if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return out;
+        tracker.trackNode(node);
+        nodes.push_back(node);
+
+        src = dst;
+    }
+
+    if (vxVerifyGraph(graph) != VX_SUCCESS) return out;
+
+    for (int i = 0; i < warmup; i++) vxProcessGraph(graph);
+
+    std::vector<double> samples;
+    samples.reserve(iterations);
+    BenchmarkTimer timer;
+    for (int i = 0; i < iterations; i++) {
+        timer.start();
+        if (vxProcessGraph(graph) != VX_SUCCESS) return out;
+        timer.stop();
+        samples.push_back(timer.elapsed_ns());
+    }
+
+    out.median_wall_ns = BenchmarkStats::compute(samples).median_ns;
+
+    // VX_GRAPH_PERFORMANCE / VX_NODE_PERFORMANCE accumulate across every
+    // vxProcessGraph call (warmup + iterations); since both averages cover
+    // the same set of runs, the ratio between them is unaffected by warmup
+    // bias.
+    vx_perf_t graph_perf = {};
+    if (BenchmarkTimer::queryGraphPerf(graph, graph_perf)) {
+        out.graph_perf_avg_ns = static_cast<double>(graph_perf.avg);
+    }
+
+    out.node_count = static_cast<int>(nodes.size());
+    for (vx_node n : nodes) {
+        vx_perf_t np = {};
+        if (BenchmarkTimer::queryNodePerf(n, np)) {
+            out.node_perf_sum_avg_ns += static_cast<double>(np.avg);
+            out.nodes_with_perf++;
+        }
+    }
+
+    return out;
+}
+
 // Run all three timing modes for a chain and return a populated
 // BenchmarkResult with framework_metrics filled. The runner backfills name /
 // category / feature_set / resolution after this returns.
@@ -201,9 +307,12 @@ BenchmarkResult runGraphDividend(const std::vector<ChainStage>& stages,
     double t_real = timeGraphChain(ctx, res.width, res.height, stages,
                                    /*use_virtual=*/false,
                                    cfg.warmup, cfg.iterations, gen);
-    double t_virt = timeGraphChain(ctx, res.width, res.height, stages,
-                                   /*use_virtual=*/true,
-                                   cfg.warmup, cfg.iterations, gen);
+    // Use the perf-aware variant for the canonical virtual-chain timing so we
+    // get vxQueryGraph / vxQueryNode counters from the same iteration set.
+    VirtualChainPerf vp = timeVirtualChainWithNodePerf(ctx, res.width, res.height,
+                                                      stages, cfg.warmup,
+                                                      cfg.iterations, gen);
+    double t_virt = vp.median_wall_ns;
 
     if (t_imm <= 0.0 || t_real <= 0.0 || t_virt <= 0.0) {
         r.supported = false;
@@ -221,6 +330,29 @@ BenchmarkResult runGraphDividend(const std::vector<ChainStage>& stages,
         {"graph_speedup",    speedup,      "x",  true},
         {"virtual_dividend", virt_div,     "x",  true},
     };
+
+    // Per-node VX_NODE_PERFORMANCE attribution. Only emit if every node in
+    // the chain reported a populated vx_perf_t and the graph-level perf is
+    // also non-zero — partial coverage would make the sum/graph ratio
+    // misleading. Some implementations don't populate these counters at all
+    // (e.g. minimal sample drivers), and on those we silently skip the
+    // attribution metrics rather than emit zeros that pollute comparisons.
+    if (vp.node_count > 0 &&
+        vp.nodes_with_perf == vp.node_count &&
+        vp.graph_perf_avg_ns > 0.0) {
+        double node_sum_ms   = vp.node_perf_sum_avg_ns / 1e6;
+        double graph_perf_ms = vp.graph_perf_avg_ns    / 1e6;
+        // fusion_ratio > 1.0 means the graph runs faster than the sum of
+        // its node times — strong evidence the runtime fused, pipelined,
+        // or overlapped nodes. ≈ 1.0 means strict back-to-back execution.
+        double fusion_ratio  = (graph_perf_ms > 0) ? (node_sum_ms / graph_perf_ms) : 0.0;
+
+        r.framework_metrics.push_back({"node_count",     static_cast<double>(vp.node_count),
+                                       "count", false});
+        r.framework_metrics.push_back({"node_sum_ms",    node_sum_ms,   "ms", false});
+        r.framework_metrics.push_back({"graph_perf_ms",  graph_perf_ms, "ms", false});
+        r.framework_metrics.push_back({"fusion_ratio",   fusion_ratio,  "x",  true});
+    }
 
     // Surface the best graph form as the canonical wall-clock / MP/s so the
     // result aggregates sensibly in scaling and top-N views without polluting

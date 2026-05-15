@@ -194,6 +194,17 @@ Each `GraphDividend_*` case times the same chain three ways and emits five metri
 | `graph_speedup` | × | `sum_immediate_ms / graph_virtual_ms`. **>1 means the graph form beats summed immediate calls** — the headline framework dividend |
 | `virtual_dividend` | × | `graph_real_ms / graph_virtual_ms`. **>1 means virtual intermediates help** (runtime did something useful with the freedom) |
 
+When the implementation populates `VX_NODE_PERFORMANCE` and `VX_GRAPH_PERFORMANCE` for every node in the virtual-chain run, four additional fusion-attribution metrics are emitted (skipped silently on implementations that don't expose those counters, so the headline metrics above remain comparable):
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `node_count` | count | Number of nodes in the chain |
+| `node_sum_ms` | ms | Sum over all nodes of `vxQueryNode(VX_NODE_PERFORMANCE).avg` — what the runtime says it spent inside individual kernels |
+| `graph_perf_ms` | ms | `vxQueryGraph(VX_GRAPH_PERFORMANCE).avg` — what the runtime says it spent on the whole graph |
+| `fusion_ratio` | × | `node_sum_ms / graph_perf_ms`. **≈ 1.0** = strict back-to-back execution, no fusion. **> 1.0** = graph runs faster than the sum of node times — strong evidence the runtime fused, pipelined, or overlapped nodes (this is graph framework value the per-kernel benchmarks cannot see). **< 1.0** = per-node accounting under-reports vs. the graph total (e.g. excludes shared setup); rare but possible. **≈ `node_count`** = the implementation is reporting whole-graph time on every node (i.e. it doesn't attribute per-node performance) — useful signal even though it doesn't tell you about fusion |
+
+> `fusion_ratio` is intentionally **not** included in the OpenVX Framework Score yet — only `graph_dividend` benchmarks emit it, so weighting it equally with score metrics that span every framework benchmark would over-index on this one scenario. It also depends on the implementation populating `VX_NODE_PERFORMANCE` correctly, which not every conformant runtime does. The score gating may be revisited once we have data from more implementations.
+
 `VerifyChain_Box3x3` rebuilds a chain of N Box3x3 nodes for each requested depth and reports per-N timings plus three aggregate metrics:
 
 | Metric | Unit | Meaning |
