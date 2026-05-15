@@ -237,6 +237,197 @@ BenchmarkResult runGraphDividend(const std::vector<ChainStage>& stages,
     return r;
 }
 
+// Per-N timings collected by runVerifyChain; one of these is produced per
+// chain depth and feeds both the per-N metrics and the slope regression.
+struct VerifySample {
+    int n;                      // chain depth (number of Box3x3 nodes)
+    double create_ms;           // time to vxCreateGraph + add N nodes
+    double verify_ms;           // time of vxVerifyGraph
+    double first_process_ms;    // first vxProcessGraph (lazy alloc included)
+    double steady_process_ms;   // median of subsequent vxProcessGraph calls
+    bool ok;
+};
+
+// Build a graph of N Box3x3 nodes (input -> N-1 virtual intermediates ->
+// output) and return per-phase timings.
+VerifySample timeVerifyChain(vx_context ctx, uint32_t width, uint32_t height,
+                             int n, int warmup, int iterations,
+                             TestDataGenerator& gen) {
+    VerifySample s{};
+    s.n = n;
+    if (n < 1) return s;
+
+    ResourceTracker tracker;
+
+    vx_image input = gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8);
+    if (vxGetStatus((vx_reference)input) != VX_SUCCESS) return s;
+    tracker.trackImage(input);
+
+    vx_image output = vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8);
+    if (vxGetStatus((vx_reference)output) != VX_SUCCESS) return s;
+    tracker.trackImage(output);
+
+    BenchmarkTimer timer;
+
+    // Phase 1: graph construction (vxCreateGraph + N node creations).
+    timer.start();
+    vx_graph graph = vxCreateGraph(ctx);
+    if (vxGetStatus((vx_reference)graph) != VX_SUCCESS) return s;
+    tracker.trackGraph(graph);
+
+    vx_image src = input;
+    for (int i = 0; i < n; i++) {
+        bool is_last = (i + 1 == n);
+        vx_image dst = is_last
+            ? output
+            : vxCreateVirtualImage(graph, width, height, VX_DF_IMAGE_U8);
+        if (vxGetStatus((vx_reference)dst) != VX_SUCCESS) return s;
+        if (!is_last) tracker.trackImage(dst);
+
+        vx_node node = vxBox3x3Node(graph, src, dst);
+        if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return s;
+        tracker.trackNode(node);
+
+        src = dst;
+    }
+    timer.stop();
+    s.create_ms = timer.elapsed_ms();
+
+    // Phase 2: vxVerifyGraph. The headline framework metric.
+    timer.start();
+    if (vxVerifyGraph(graph) != VX_SUCCESS) return s;
+    timer.stop();
+    s.verify_ms = timer.elapsed_ms();
+
+    // Phase 3: first vxProcessGraph. Often pays a one-shot tax (lazy
+    // allocation of execution state, kernel JIT, target affinity selection)
+    // beyond the steady-state cost; this number minus the steady median is
+    // a useful "warm-up" signal.
+    timer.start();
+    if (vxProcessGraph(graph) != VX_SUCCESS) return s;
+    timer.stop();
+    s.first_process_ms = timer.elapsed_ms();
+
+    // Phase 4: steady-state. Run cfg.warmup more then take median of
+    // cfg.iterations samples.
+    for (int i = 0; i < warmup; i++) vxProcessGraph(graph);
+    std::vector<double> samples;
+    samples.reserve(iterations);
+    for (int i = 0; i < iterations; i++) {
+        timer.start();
+        if (vxProcessGraph(graph) != VX_SUCCESS) return s;
+        timer.stop();
+        samples.push_back(timer.elapsed_ns());
+    }
+    s.steady_process_ms = BenchmarkStats::compute(samples).median_ns / 1e6;
+    s.ok = true;
+    return s;
+}
+
+// Linear regression over (n, verify_ms) samples returning slope and intercept
+// of verify_ms = intercept + slope * n. Falls back to 0 / first-sample if
+// fewer than 2 points are usable.
+void verifyRegression(const std::vector<VerifySample>& samples,
+                      double& slope_out, double& intercept_out) {
+    slope_out = 0;
+    intercept_out = 0;
+    int count = 0;
+    double sum_x = 0, sum_y = 0, sum_xx = 0, sum_xy = 0;
+    for (const auto& s : samples) {
+        if (!s.ok) continue;
+        double x = static_cast<double>(s.n);
+        double y = s.verify_ms;
+        sum_x += x; sum_y += y;
+        sum_xx += x * x; sum_xy += x * y;
+        count++;
+    }
+    if (count < 2) {
+        if (count == 1) intercept_out = sum_y;
+        return;
+    }
+    double denom = count * sum_xx - sum_x * sum_x;
+    if (denom == 0) return;
+    slope_out = (count * sum_xy - sum_x * sum_y) / denom;
+    intercept_out = (sum_y - slope_out * sum_x) / count;
+}
+
+// Build a chain of N Box3x3 nodes for several N and report per-N create /
+// verify / first-process / steady-process timings, plus regression-derived
+// per-node verify slope and the lazy-alloc overhead at the deepest chain.
+BenchmarkResult runVerifyChain(vx_context ctx, const Resolution& res,
+                               const BenchmarkConfig& cfg) {
+    BenchmarkResult r;
+    r.iterations = cfg.iterations;
+    r.warmup = cfg.warmup;
+
+    const auto& depths = cfg.framework_chain_depths;
+    if (depths.empty()) {
+        r.supported = false;
+        r.skip_reason = "no chain depths configured";
+        return r;
+    }
+
+    TestDataGenerator gen(cfg.seed);
+    std::vector<VerifySample> samples;
+    samples.reserve(depths.size());
+    for (int n : depths) {
+        if (n < 1) continue;
+        VerifySample s = timeVerifyChain(ctx, res.width, res.height, n,
+                                         cfg.warmup, cfg.iterations, gen);
+        if (!s.ok) {
+            r.supported = false;
+            r.skip_reason = "verify chain timing failed at depth " +
+                            std::to_string(n);
+            return r;
+        }
+        samples.push_back(s);
+    }
+
+    // Per-N metrics. Names embed the depth so downstream consumers can pick
+    // them apart trivially.
+    for (const auto& s : samples) {
+        std::string p = "n" + std::to_string(s.n) + "_";
+        r.framework_metrics.push_back({p + "create_ms",
+                                       s.create_ms, "ms", false});
+        r.framework_metrics.push_back({p + "verify_ms",
+                                       s.verify_ms, "ms", false});
+        r.framework_metrics.push_back({p + "first_process_ms",
+                                       s.first_process_ms, "ms", false});
+        r.framework_metrics.push_back({p + "steady_process_ms",
+                                       s.steady_process_ms, "ms", false});
+    }
+
+    // Aggregates: linear-regression slope + intercept of verify cost vs N,
+    // and the first-process overhead at the deepest chain.
+    double slope_ms_per_node = 0, intercept_ms = 0;
+    verifyRegression(samples, slope_ms_per_node, intercept_ms);
+
+    r.framework_metrics.push_back({"verify_per_node_ms",
+                                   slope_ms_per_node, "ms/node", false});
+    r.framework_metrics.push_back({"verify_intercept_ms",
+                                   intercept_ms, "ms", false});
+
+    const auto& deepest = samples.back();
+    double first_overhead = deepest.first_process_ms - deepest.steady_process_ms;
+    if (first_overhead < 0) first_overhead = 0;
+    r.framework_metrics.push_back({"first_process_overhead_ms",
+                                   first_overhead, "ms", false});
+
+    // Surface the deepest-chain steady-state time as the canonical
+    // wall-clock so the row is sortable in scaling/top-N views without
+    // polluting Vision Score (framework results are filtered out there).
+    double primary_ns = deepest.steady_process_ms * 1e6;
+    r.wall_clock.median_ns = primary_ns;
+    r.wall_clock.mean_ns = primary_ns;
+    r.wall_clock.min_ns = primary_ns;
+    r.wall_clock.max_ns = primary_ns;
+    r.wall_clock.sample_count = static_cast<size_t>(cfg.iterations);
+    r.megapixels_per_sec = BenchmarkStats::computeThroughput(
+        res.width, res.height, primary_ns);
+
+    return r;
+}
+
 // Build the canonical "pure framework" chain: 4 Box3x3 nodes back-to-back.
 std::vector<ChainStage> makeBox3x3Chain() {
     ChainStage box;
@@ -321,6 +512,20 @@ std::vector<BenchmarkCase> registerFrameworkBenchmarks() {
         bc.framework_run = [](vx_context ctx, const Resolution& res,
                               const BenchmarkConfig& cfg) -> BenchmarkResult {
             return runGraphDividend(makeMixedFilterChain(), ctx, res, cfg);
+        };
+        cases.push_back(bc);
+    }
+
+    {
+        BenchmarkCase bc;
+        bc.name = "VerifyChain_Box3x3";
+        bc.category = "framework_compile";
+        bc.feature_set = "framework";
+        bc.kernel_enum = VX_KERNEL_BOX_3x3;
+        bc.required_kernels = {VX_KERNEL_BOX_3x3};
+        bc.framework_run = [](vx_context ctx, const Resolution& res,
+                              const BenchmarkConfig& cfg) -> BenchmarkResult {
+            return runVerifyChain(ctx, res, cfg);
         };
         cases.push_back(bc);
     }
