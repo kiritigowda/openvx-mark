@@ -181,6 +181,8 @@ Framework benchmarks are **opt-in** — they are not in the default run and do n
 | `GraphDividend_MixedFilters` | Gaussian3x3 → Box3x3 → Median3x3 → Erode3x3 | Realistic 4-stage filter pipeline |
 | `VerifyChain_Box3x3` | Box3x3 × N (sweeps `--framework-chain-depths`, default 1, 4, 16, 64) | Graph build / verify cost vs N nodes; first-process lazy-alloc tax |
 | `ParallelBranches_Box3x3` | 4 independent Box3x3 branches sharing one input | Whether the graph runtime exploits scheduling parallelism on K branches with no data dependency |
+| `Async_Single_Box3x3_x4` | One Box3x3 × 4 chain timed with `vxProcessGraph` and with `vxScheduleGraph`+`vxWaitGraph` | Cost of the async dispatch API on a single graph |
+| `Async_Concurrent_Box3x3_x2` | Two independent Box3x3 × 4 chain graphs | Whether the runtime overlaps independent graphs when scheduled concurrently |
 
 Each `GraphDividend_*` case times the same chain three ways and emits five metrics:
 
@@ -220,6 +222,27 @@ Interpreting `parallelism_efficiency`:
 - **≈ 1.0** at FHD or larger — the runtime is exploiting the K-way opportunity well (modulo memory bandwidth).
 - **> 1.0** at small resolutions — graph framework dispatch savings (the same effect measured by `graph_dividend`) compound with parallelism, since the immediate-mode baseline pays per-call dispatch tax K times.
 - **< 1/K** at very large resolutions — memory bandwidth saturates before the cores do; the K branches contend for the same input image and fight for L2/L3.
+
+`Async_Single_Box3x3_x4` runs one verified Box3x3 × 4 chain graph and times it both with synchronous `vxProcessGraph` and with the async pair `vxScheduleGraph` + `vxWaitGraph`. The point is to surface the cost of the async dispatch API itself.
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `sync_ms` | ms | Median `vxProcessGraph` time |
+| `async_ms` | ms | Median `vxScheduleGraph` + `vxWaitGraph` time |
+| `async_overhead_ratio` | × | `async_ms / sync_ms`. **Lower is better; 1.0 = no tax**, > 1 = the async API path is more expensive (typically thread-pool / signaling cost), < 1 = async path actually wins (rare but possible) |
+
+`Async_Concurrent_Box3x3_x2` builds two independent Box3x3 × 4 chain graphs (no shared data) and times the pair two ways. The async form lets the runtime overlap the two graphs; the sync form does not.
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `graphs` | count | Number of independent graphs (2 in v1) |
+| `sync_sequential_ms` | ms | `vxProcessGraph(g0); vxProcessGraph(g1)` — strict serial |
+| `async_concurrent_ms` | ms | `vxScheduleGraph(g0); vxScheduleGraph(g1); vxWaitGraph(g0); vxWaitGraph(g1)` — runtime is free to overlap |
+| `concurrency_speedup` | × | `sync_sequential_ms / async_concurrent_ms`. **>1 = the runtime overlapped graphs**, ≈ 1 = it serialized them, < 1 = async overhead exceeded any concurrency gain |
+
+`concurrency_speedup` < 1 at small resolutions is a real and useful signal: it means the implementation's async dispatch overhead exceeds any concurrency gain at that work size. The metric only becomes positive when the per-graph work is large enough to amortize the async path.
+
+> Pipelined streaming via the optional `vx_khr_pipelining` extension is a future enhancement and is intentionally not implemented in this release; the two scenarios above use only standard OpenVX APIs and run on every conformant implementation.
 
 ## Output
 
