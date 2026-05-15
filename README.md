@@ -180,6 +180,7 @@ Framework benchmarks are **opt-in** — they are not in the default run and do n
 | `GraphDividend_Box3x3_x4` | Box3x3 × 4 | Pure framework overhead (same kernel, isolates orchestration cost) |
 | `GraphDividend_MixedFilters` | Gaussian3x3 → Box3x3 → Median3x3 → Erode3x3 | Realistic 4-stage filter pipeline |
 | `VerifyChain_Box3x3` | Box3x3 × N (sweeps `--framework-chain-depths`, default 1, 4, 16, 64) | Graph build / verify cost vs N nodes; first-process lazy-alloc tax |
+| `ParallelBranches_Box3x3` | 4 independent Box3x3 branches sharing one input | Whether the graph runtime exploits scheduling parallelism on K branches with no data dependency |
 
 Each `GraphDividend_*` case times the same chain three ways and emits five metrics:
 
@@ -204,6 +205,21 @@ Each `GraphDividend_*` case times the same chain three ways and emits five metri
 | `first_process_overhead_ms` | ms | `first_process_ms - steady_process_ms` at the deepest chain — the cost of the first execution beyond steady state |
 
 Use `--framework-chain-depths 1,4,16,64,256` to sweep custom depths (defaults to `1,4,16,64`).
+
+`ParallelBranches_Box3x3` builds one graph with K = 4 independent Box3x3 nodes that share a single input image and write to K independent outputs. The K nodes have no data dependency on each other, so a competent scheduler is free to dispatch them concurrently across cores or targets. The strict-serial baseline is K back-to-back `vxuBox3x3` immediate-mode calls, which admit no parallelism.
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `branches` | count | K — number of independent branches (4 in v1) |
+| `serial_immediate_ms` | ms | K back-to-back `vxuBox3x3` calls — strict-serial reference |
+| `parallel_graph_ms` | ms | One graph with K independent Box3x3 nodes — graph runtime is free to parallelize |
+| `parallelism_speedup` | × | `serial_immediate_ms / parallel_graph_ms`. **K = perfect parallelism, 1 = none** |
+| `parallelism_efficiency` | × | `parallelism_speedup / K`. **1.0 = perfect K-way parallelism, 1/K = none** |
+
+Interpreting `parallelism_efficiency`:
+- **≈ 1.0** at FHD or larger — the runtime is exploiting the K-way opportunity well (modulo memory bandwidth).
+- **> 1.0** at small resolutions — graph framework dispatch savings (the same effect measured by `graph_dividend`) compound with parallelism, since the immediate-mode baseline pays per-call dispatch tax K times.
+- **< 1/K** at very large resolutions — memory bandwidth saturates before the cores do; the K branches contend for the same input image and fight for L2/L3.
 
 ## Output
 
