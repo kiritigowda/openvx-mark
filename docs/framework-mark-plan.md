@@ -1,8 +1,23 @@
 # Framework Mark Plan
 
+> **Status: v1 shipped.** All four v1 scenarios plus the OpenVX Framework Score and the first v2 backlog item (per-node `VX_NODE_PERFORMANCE` attribution) are merged. See `CHANGELOG.md` for the release summary. This document is preserved as the design rationale and tracks remaining v2 backlog items.
+
 A concrete plan for adding a **framework benchmark suite** to `openvx-mark` that measures what only a graph framework can do — graph construction/verification cost, the "graph dividend" vs immediate mode, virtual-image savings, parallel/heterogeneous scheduling, async/streaming throughput, per-node attribution, user-kernel dispatch tax, and lifecycle costs.
 
 This complements (not replaces) the existing per-kernel suite.
+
+## v1 Delivery Summary
+
+| PR | Slice | Status | Key artifact |
+|:---|:---|:---|:---|
+| #5 | Plumbing — `FrameworkMetric`, `framework_run`, `--feature-set framework` | ✅ merged | `include/benchmark_stats.h`, `include/benchmark_runner.h` |
+| #6 | `graph_dividend` (Box3x3×4 + MixedFilters chains) | ✅ merged | `src/benchmarks/framework_benchmarks.cpp` |
+| #7 | `verify_chain` (depth sweep + linear regression) | ✅ merged | `--framework-chain-depths` flag |
+| #8 | `parallel_branches` (K = 4 independent Box3x3) | ✅ merged | `parallelism_efficiency` metric |
+| #9 | `async_streaming` (single-graph overhead + concurrent multi-graph) | ✅ merged | `concurrency_speedup` metric |
+| #10 | OpenVX Framework Score + cross-vendor comparison | ✅ merged | `framework_score` in JSON / Markdown / terminal / comparison |
+| #11 | Per-node `VX_NODE_PERFORMANCE` attribution (first v2 item) | ✅ merged | `node_count`, `node_sum_ms`, `graph_perf_ms`, `fusion_ratio` |
+| #12 | Rollup → `kg/framework-mark` | ✅ merged | (no new code) |
 
 ## 1. Goal & Non-goals
 
@@ -186,11 +201,11 @@ added to `BENCHMARK_SOURCES`. No new dependencies.
 
 PRs #1 and #2 together are the minimum useful slice — they give the headline "graph dividend" number on day one.
 
-## 13. Open questions to lock the plan
+## 13. Open questions — resolved during v1 delivery
 
-1. **Default behavior.** When the user runs bare `./openvx-mark`, should framework benchmarks be **opt-in** (recommended; current default stays exactly the same) or always on (changes default report)?
-2. **Framework Score weight.** Geomean of {`graph_speedup`, `virtual_dividend`, `parallel_efficiency`, `async_speedup`} — equal weights, or weighted toward `graph_speedup` since it is the most directly cross-vendor-comparable?
-3. **Chain content for `verify_chain` / `graph_dividend`.** Use `Box3x3` (cheapest, isolates framework cost) or a realistic 4-stage filter pipeline (closer to real workloads but mixes kernel cost into the number)? Recommendation: ship both — `Box3x3` for the *pure framework* signal, `Gaussian → Sobel → Magnitude → Threshold` for the *realistic* signal.
-4. **Targets for `parallel_branches`.** Should we attempt to enumerate targets via `vxQueryContext` / vendor extensions, or just fix the scenario to "default scheduler vs single-threaded reference" to stay vendor-neutral in v1?
-5. **Pipelining extension.** Detect via `vxQueryContext(VX_CONTEXT_EXTENSIONS)` lookup of `vx_khr_pipelining` and skip cleanly when missing — confirm this is acceptable rather than implementing a no-op fallback.
-6. **Naming.** "OpenVX Framework Score" vs "Graph Score" vs "Orchestration Score" — the marketing message matters more than the code.
+1. **Default behavior.** ✅ **Opt-in.** Framework benchmarks ship behind `--feature-set framework` (only) or `--feature-set everything` (kernels + framework). Bare `./openvx-mark` is unchanged and produces the same Vision Score it always did.
+2. **Framework Score weight.** ✅ **Equal-weight geomean** of `graph_speedup`, `virtual_dividend`, `parallelism_efficiency`, and `concurrency_speedup`. Lower-is-better metrics (`verify_per_node_ms`, `async_overhead_ratio`) and `fusion_ratio` (graph_dividend-only) are intentionally excluded so the score has a single monotonic interpretation and isn't over-weighted by any one scenario.
+3. **Chain content.** ✅ **Both.** `graph_dividend` ships two chains: `GraphDividend_Box3x3_x4` (4 × Box3x3 — pure framework signal) and `GraphDividend_MixedFilters` (Gaussian → Box → Median → Erode — realistic).
+4. **Targets for `parallel_branches`.** ✅ **Vendor-neutral v1.** No `VX_NODE_TARGET` pinning, no vendor-extension target enumeration. Scenario compares default-scheduler graph vs strictly-serial immediate-mode dispatch and lets `parallelism_efficiency` speak.
+5. **Pipelining extension.** ✅ **Skipped.** `vx_khr_pipelining` was deliberately *not* used in v1; `async_streaming` uses only standard `vxScheduleGraph` / `vxWaitGraph`, so it runs on every conformant implementation.
+6. **Naming.** ✅ **"OpenVX Framework Score"** — emitted as `framework_score` in JSON and printed alongside Vision Score in the terminal summary.

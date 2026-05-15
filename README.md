@@ -2,22 +2,25 @@
 
 # openvx-mark
 
-**openvx-mark** is a vendor-agnostic benchmark suite for [OpenVX](https://www.khronos.org/openvx/) implementations (1.0 through 1.3+). It measures the performance of individual vision kernels, multi-node pipelines, and immediate-mode operations across configurable resolutions, producing composite scores, conformance reports, and detailed analytics.
+**openvx-mark** is a vendor-agnostic benchmark suite for [OpenVX](https://www.khronos.org/openvx/) implementations (1.0 through 1.3+). It measures the performance of individual vision kernels, multi-node pipelines, immediate-mode operations, **and the OpenVX graph framework itself** across configurable resolutions, producing composite scores, conformance reports, and detailed analytics.
 
-openvx-mark works with any conformant OpenVX implementation — AMD OpenVX (MIVisionX), Intel OpenVX, Khronos Sample Implementation, or any other vendor's runtime.
+openvx-mark works with any conformant OpenVX implementation — AMD OpenVX (MIVisionX), Intel OpenVX, Khronos Sample Implementation, or any other vendor's runtime. It is designed to answer two complementary questions: *how fast are this implementation's kernels?* and *how much value does this implementation's graph framework add over a kernel-only baseline?*
 
 ## Features
 
 - **60 standard OpenVX kernels** across vision and enhanced vision feature sets
 - **Graph mode and immediate mode** benchmarking
+- **Framework benchmarks** *(opt-in)* — measure what only the OpenVX graph runtime can do: graph-vs-immediate dividend, virtual-image fusion, scheduling parallelism on independent branches, async dispatch overhead and concurrency, verify-cost-vs-depth scaling, and per-node `VX_NODE_PERFORMANCE` attribution. See [Framework Benchmarks](#framework-benchmarks-opt-in) below.
 - **Multi-resolution testing** — VGA, HD, FHD, 4K, 8K, or custom
-- **Composite scoring** — geometric mean of megapixels/sec (OpenVX Vision Score)
+- **Composite scoring** — geometric mean of megapixels/sec (**OpenVX Vision Score**) plus a dimensionless **OpenVX Framework Score** (geomean of framework-dividend metrics; `> 1.0` means the graph framework is adding value)
 - **Conformance checking** — verifies all available kernels produce valid results
 - **Stability gating** — CV% threshold with automatic retries for unstable results
 - **Multi-resolution scaling analysis** — measures throughput scaling efficiency across resolutions
 - **Peak vs sustained performance** — compares best-case to typical latency
-- **Baseline comparison** — compare JSON reports across runs or vendors
+- **Cross-vendor comparison** — C++ (`--compare`) and Python (`scripts/compare_reports.py`) generate side-by-side reports including a direction-aware **Framework Metrics Comparison** section
 - **Reports** — JSON, CSV, and Markdown output with glossary
+
+See [`CHANGELOG.md`](CHANGELOG.md) for release notes; the framework benchmark suite landed in v1.0.
 
 ## Important
 
