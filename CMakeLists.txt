@@ -112,6 +112,7 @@ set(BENCHMARK_SOURCES
     src/benchmarks/immediate_benchmarks.cpp
     src/benchmarks/pipeline_vision.cpp
     src/benchmarks/pipeline_feature.cpp
+    src/benchmarks/framework_benchmarks.cpp
 )
 
 add_executable(openvx-mark ${BENCHMARK_SOURCES})

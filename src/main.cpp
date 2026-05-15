@@ -287,6 +287,19 @@ int main(int argc, char* argv[]) {
         runner.addCases(registerFeaturePipelines());
     }
 
+    // Framework benchmarks: only registered when the user opts in via
+    // --feature-set framework (or --feature-set everything). They exercise
+    // the OpenVX graph runtime itself rather than per-kernel throughput.
+    {
+        bool wants_framework = false;
+        for (const auto& fs : config.feature_sets) {
+            if (fs == "framework") { wants_framework = true; break; }
+        }
+        if (wants_framework) {
+            runner.addCases(registerFrameworkBenchmarks());
+        }
+    }
+
     auto results = runner.runAll();
 
     // Generate reports
@@ -393,6 +406,28 @@ int main(int argc, char* argv[]) {
                        by_lat[i]->wall_clock.median_ns / 1e6,
                        by_lat[i]->mode.c_str(),
                        by_lat[i]->resolution_name.c_str());
+            }
+        }
+    }
+
+    // Framework benchmark summary: print per-scenario metrics so the headline
+    // "graph dividend" numbers are visible at a glance without opening JSON.
+    {
+        std::vector<const BenchmarkResult*> framework;
+        for (const auto& r : results) {
+            if (r.feature_set == "framework" && r.supported &&
+                !r.framework_metrics.empty()) {
+                framework.push_back(&r);
+            }
+        }
+        if (!framework.empty()) {
+            printf("  Framework Benchmarks (%zu):\n", framework.size());
+            for (const auto* r : framework) {
+                printf("    %s @ %s\n", r->name.c_str(), r->resolution_name.c_str());
+                for (const auto& fm : r->framework_metrics) {
+                    printf("      %-22s %10.4f %s\n",
+                           fm.name.c_str(), fm.value, fm.unit.c_str());
+                }
             }
         }
     }

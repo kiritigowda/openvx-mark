@@ -90,5 +90,6 @@ std::vector<BenchmarkCase> registerMiscBenchmarks();
 std::vector<BenchmarkCase> registerImmediateBenchmarks();
 std::vector<BenchmarkCase> registerVisionPipelines();
 std::vector<BenchmarkCase> registerFeaturePipelines();
+std::vector<BenchmarkCase> registerFrameworkBenchmarks();
 
 #endif // BENCHMARK_RUNNER_H

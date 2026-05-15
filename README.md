@@ -168,6 +168,27 @@ cmake --build .
 | HarrisTracker | ColorConvert + ChannelExtract + HarrisCorners |
 | ThresholdedEdge | Sobel3x3 + Magnitude + ConvertDepth + Threshold |
 
+### Framework Benchmarks (opt-in)
+
+Kernel benchmarks measure how fast a single OpenVX node executes; **framework benchmarks** measure what only the OpenVX *graph runtime* can do — verifying a DAG, managing virtual intermediates, fusing/aliasing buffers, scheduling work across targets. They are the metrics that distinguish an OpenVX implementation from a kernel library.
+
+Framework benchmarks are **opt-in** — they are not in the default run and do not contribute to the `OpenVX Vision Score`. Enable them with `--feature-set framework` (only framework benchmarks) or `--feature-set everything` (kernels + framework). See [`docs/framework-mark-plan.md`](docs/framework-mark-plan.md) for the roadmap.
+
+| Benchmark | Chain | What it measures |
+|:---|:---|:---|
+| `GraphDividend_Box3x3_x4` | Box3x3 × 4 | Pure framework overhead (same kernel, isolates orchestration cost) |
+| `GraphDividend_MixedFilters` | Gaussian3x3 → Box3x3 → Median3x3 → Erode3x3 | Realistic 4-stage filter pipeline |
+
+Each `GraphDividend_*` case times the same chain three ways and emits five metrics:
+
+| Metric | Unit | Meaning |
+|:---|:---|:---|
+| `sum_immediate_ms` | ms | Sum of N back-to-back `vxu*` immediate-mode calls per chain pass |
+| `graph_real_ms` | ms | One verified graph; intermediates are real (host-visible) buffers |
+| `graph_virtual_ms` | ms | One verified graph; intermediates are `vxCreateVirtualImage` (runtime is free to fuse / alias / tile) |
+| `graph_speedup` | × | `sum_immediate_ms / graph_virtual_ms`. **>1 means the graph form beats summed immediate calls** — the headline framework dividend |
+| `virtual_dividend` | × | `graph_real_ms / graph_virtual_ms`. **>1 means virtual intermediates help** (runtime did something useful with the freedom) |
+
 ## Output
 
 ### Terminal Summary
