@@ -63,8 +63,9 @@ Features implemented in the polished comparison report (both C++ `--compare` and
 ### Implemented
 
 - **System info section** — Shows CPU, cores, RAM, OS. Detects same vs different hardware with a mismatch warning.
-- **Conformance & Scores table** — Side-by-side Vision Score (geometric mean MP/s), conformance PASS/FAIL with kernel counts.
+- **Conformance & Scores table** — Side-by-side Vision Score (geometric mean MP/s), Framework Score (geomean of framework-dividend metrics), conformance PASS/FAIL with kernel counts.
 - **Category sub-scores** — Per-category geometric mean comparison with % change column.
+- **Framework Metrics Comparison** *(v1.0)* — Per-scenario framework metrics rendered side-by-side with a direction-aware ratio column (higher-is-better metrics show `B/A`; lower-is-better metrics show `A/B`, so a ratio `> 1.00` always means the second implementation is better). Both C++ and Python.
 - **Summary with per-category breakdown** — Regression/improvement/unchanged counts, broken down by category (e.g., "3 regressions in filters").
 - **Detailed results with MP/s** — Both median latency (ms) and throughput (MP/s) for each implementation, plus change % and status.
 - **Benchmarks only in one report** — Lists benchmarks present in one file but not the other, so nothing is silently dropped.
@@ -82,3 +83,15 @@ Features implemented in the polished comparison report (both C++ `--compare` and
 - **N-way comparison** — Support comparing 3+ implementations in a single report (currently optimized for pairwise).
 - **Grouped-by-category view** — Option to group the detailed results table by category instead of sorting by change %.
 - **Historical trend tracking** — Compare against a series of reports over time to detect gradual regressions.
+
+## Framework Benchmark Backlog (v2)
+
+The v1 framework benchmark suite shipped with five scenarios (`graph_dividend`, `verify_chain`, `parallel_branches`, `async_streaming`, plus per-node `VX_NODE_PERFORMANCE` attribution) and the OpenVX Framework Score. The remaining v2 backlog items, each tracked for a future PR:
+
+- **`vxMapImagePatch` / `vxUnmapImagePatch` round-trip cost** — host ↔ device memory tax. Especially impactful on GPU-backed implementations.
+- **User-kernel dispatch tax** — register a no-op user kernel via `vxAddUserKernel` and measure per-call overhead vs the equivalent built-in node.
+- **Context lifecycle stress** — `vxCreateContext` / `vxReleaseContext` × N; same graph built / torn down × N. Surfaces leaks and per-context setup cost.
+- **Determinism under load** — single-graph CV% while K other graphs are scheduled. Shows scheduling-fairness behavior.
+- **NN / extension-gated benchmarks** — opt-in scenarios for `vx_khr_nn`, `vx_khr_pipelining`, etc. Always skipped cleanly when the extension isn't reported.
+
+See [`docs/framework-mark-plan.md`](framework-mark-plan.md) for the original design rationale.

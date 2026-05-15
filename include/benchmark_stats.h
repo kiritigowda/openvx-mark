@@ -19,11 +19,21 @@ struct TimingStats {
     size_t outliers_removed = 0;
 };
 
+// A named scalar metric emitted by a framework benchmark.
+// Framework benchmarks (feature_set == "framework") may emit one or more
+// of these in addition to (or instead of) megapixels_per_sec.
+struct FrameworkMetric {
+    std::string name;             // e.g. "graph_speedup", "verify_ms"
+    double value = 0;
+    std::string unit;             // e.g. "ms", "ms/node", "x", "ns/call", "FPS"
+    bool higher_is_better = true; // direction for comparison reports
+};
+
 struct BenchmarkResult {
     std::string name;
     std::string category;
-    std::string feature_set;  // "vision" or "enhanced_vision"
-    std::string mode;  // "graph" or "immediate"
+    std::string feature_set;  // "vision", "enhanced_vision", or "framework"
+    std::string mode;  // "graph", "immediate", or "framework"
     std::string resolution_name;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -43,6 +53,9 @@ struct BenchmarkResult {
     // Stability gating
     bool stability_warning = false;
     int retry_count = 0;
+
+    // Framework benchmark metrics (empty for kernel benchmarks)
+    std::vector<FrameworkMetric> framework_metrics;
 };
 
 class BenchmarkStats {

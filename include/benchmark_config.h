@@ -60,6 +60,12 @@ struct BenchmarkConfig {
 
     // Comparison
     std::vector<std::string> compare_files;
+
+    // Framework benchmarks: chain depths used by verify_chain (number of
+    // chained Box3x3 nodes). Each depth produces a per-N set of metrics and
+    // contributes to the verify-cost-vs-N slope. Default sweeps 1, 4, 16, 64
+    // nodes which is enough for a clean linear regression across most impls.
+    std::vector<int> framework_chain_depths = {1, 4, 16, 64};
 };
 
 // Default tensor dimensions for benchmarks

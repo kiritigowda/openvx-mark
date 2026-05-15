@@ -66,6 +66,60 @@ std::vector<BenchmarkResult> BenchmarkRunner::runAll() {
         case_idx++;
 
         for (const auto& res : config_.resolutions) {
+            // Framework benchmark: takes precedence over graph/immediate
+            // execution. The framework_run function is fully responsible
+            // for its own timing and returns a populated result.
+            if (bc.framework_run) {
+                if (!config_.quiet) {
+                    printf("[%d/%d] %-30s %s (framework)...", case_idx, total_cases,
+                           bc.name.c_str(), res.name.c_str());
+                    fflush(stdout);
+                }
+                BenchmarkResult result;
+                result.name = bc.name;
+                result.category = bc.category;
+                result.feature_set = bc.feature_set;
+                result.mode = "framework";
+                result.resolution_name = res.name;
+                result.width = res.width;
+                result.height = res.height;
+
+                // Check kernel availability for any kernels the framework
+                // benchmark depends on (e.g. a graph_dividend scenario that
+                // composes Gaussian/Sobel/etc.).
+                if (!bc.required_kernels.empty() &&
+                    !registry_.allAvailable(bc.required_kernels)) {
+                    result.supported = false;
+                    result.skip_reason = "required kernel not available";
+                } else {
+                    BenchmarkResult sub = bc.framework_run(context_.handle(), res, config_);
+                    // Merge: identifying fields stay, measurement fields come
+                    // from the framework function.
+                    result.supported = sub.supported;
+                    result.verified = sub.verified;
+                    result.skip_reason = sub.skip_reason;
+                    result.wall_clock = sub.wall_clock;
+                    result.has_vx_perf = sub.has_vx_perf;
+                    result.vx_perf = sub.vx_perf;
+                    result.megapixels_per_sec = sub.megapixels_per_sec;
+                    result.iterations = sub.iterations;
+                    result.warmup = sub.warmup;
+                    result.stability_warning = sub.stability_warning;
+                    result.retry_count = sub.retry_count;
+                    result.framework_metrics = std::move(sub.framework_metrics);
+                }
+
+                if (!config_.quiet) {
+                    if (!result.supported) {
+                        printf(" SKIPPED (%s)\n", result.skip_reason.c_str());
+                    } else {
+                        printf(" OK (%zu metrics)\n", result.framework_metrics.size());
+                    }
+                }
+                results.push_back(std::move(result));
+                continue;  // skip graph/immediate for framework cases
+            }
+
             // Graph mode
             if (config_.mode == BenchmarkConfig::Mode::GRAPH ||
                 config_.mode == BenchmarkConfig::Mode::BOTH) {

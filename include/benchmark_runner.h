@@ -16,7 +16,7 @@
 struct BenchmarkCase {
     std::string name;
     std::string category;
-    std::string feature_set;  // "vision" or "enhanced_vision"
+    std::string feature_set;  // "vision", "enhanced_vision", or "framework"
     vx_enum kernel_enum;
     std::vector<vx_enum> required_kernels;  // all kernels needed (for pipelines)
 
@@ -37,6 +37,19 @@ struct BenchmarkCase {
     // Output verification: runs kernel on small known input, checks correctness
     using VerifyFn = std::function<bool(vx_context ctx)>;
     VerifyFn verify_fn;
+
+    // Framework benchmark: scenarios that exercise the OpenVX graph runtime
+    // itself (verify cost, graph dividend, scheduling, async, etc.) rather
+    // than a single kernel. When set, the runner skips graph_setup /
+    // immediate_func and calls this function once per resolution; the
+    // function is fully responsible for its own timing and returns a
+    // populated BenchmarkResult (typically with framework_metrics filled).
+    // The runner pre-fills name/category/feature_set/resolution before the
+    // call; the function only needs to fill measurement fields.
+    using FrameworkRunFn = std::function<BenchmarkResult(
+        vx_context ctx, const Resolution& res,
+        const BenchmarkConfig& cfg)>;
+    FrameworkRunFn framework_run;
 };
 
 class BenchmarkRunner {
@@ -77,5 +90,6 @@ std::vector<BenchmarkCase> registerMiscBenchmarks();
 std::vector<BenchmarkCase> registerImmediateBenchmarks();
 std::vector<BenchmarkCase> registerVisionPipelines();
 std::vector<BenchmarkCase> registerFeaturePipelines();
+std::vector<BenchmarkCase> registerFrameworkBenchmarks();
 
 #endif // BENCHMARK_RUNNER_H

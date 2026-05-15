@@ -18,9 +18,10 @@ static void printUsage(const char* prog) {
            OPENVX_MARK_VERSION, GIT_COMMIT_SHA);
 
     printf("Benchmark Selection:\n");
-    printf("  --all                         Run all benchmarks (default)\n");
-    printf("  --feature-set SET[,SET,...]   Feature sets: vision,enhanced_vision,all\n");
-    printf("                                (default: vision)\n");
+    printf("  --all                         Run all kernel benchmarks (vision + enhanced_vision)\n");
+    printf("  --feature-set SET[,SET,...]   Feature sets: vision,enhanced_vision,framework,all,everything\n");
+    printf("                                (default: vision; 'all' = kernels only;\n");
+    printf("                                 'everything' = kernels + framework)\n");
     printf("  --category CAT[,CAT,...]      Filter by category (pixelwise,filters,color,\n");
     printf("                                geometric,statistical,multiscale,feature,\n");
     printf("                                extraction,tensor,misc,immediate,\n");
@@ -38,7 +39,8 @@ static void printUsage(const char* prog) {
     printf("  --warmup N                    Warm-up iterations (default: 10)\n");
     printf("  --seed N                      PRNG seed (default: 42)\n");
     printf("  --stability-threshold N       CV%% threshold for stability warning (default: 15)\n");
-    printf("  --max-retries N               Max retries for unstable benchmarks (default: 0)\n\n");
+    printf("  --max-retries N               Max retries for unstable benchmarks (default: 0)\n");
+    printf("  --framework-chain-depths N,N  Chain depths for verify_chain (default: 1,4,16,64)\n\n");
 
     printf("Output:\n");
     printf("  --output-dir DIR              Output directory (default: ./benchmark_results)\n");
@@ -96,7 +98,10 @@ static bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
                 if (s == "all") {
                     config.feature_sets = {"vision", "enhanced_vision"};
                     break;
-                } else if (s == "vision" || s == "enhanced_vision") {
+                } else if (s == "everything") {
+                    config.feature_sets = {"vision", "enhanced_vision", "framework"};
+                    break;
+                } else if (s == "vision" || s == "enhanced_vision" || s == "framework") {
                     config.feature_sets.push_back(s);
                 } else {
                     printf("WARNING: Unknown feature set '%s', skipping\n", s.c_str());
@@ -157,6 +162,21 @@ static bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.stability_threshold = atof(argv[++i]);
         } else if (arg == "--max-retries" && i + 1 < argc) {
             config.max_retries = atoi(argv[++i]);
+        } else if (arg == "--framework-chain-depths" && i + 1 < argc) {
+            auto depth_strs = splitComma(argv[++i]);
+            config.framework_chain_depths.clear();
+            for (const auto& s : depth_strs) {
+                int n = atoi(s.c_str());
+                if (n > 0) {
+                    config.framework_chain_depths.push_back(n);
+                } else {
+                    printf("WARNING: Invalid chain depth '%s', skipping\n", s.c_str());
+                }
+            }
+            if (config.framework_chain_depths.empty()) {
+                printf("ERROR: No valid framework chain depths specified\n");
+                return false;
+            }
         } else if (arg == "--compare" && i + 1 < argc) {
             config.compare_files = splitComma(argv[++i]);
         } else {
@@ -283,6 +303,19 @@ int main(int argc, char* argv[]) {
         runner.addCases(registerFeaturePipelines());
     }
 
+    // Framework benchmarks: only registered when the user opts in via
+    // --feature-set framework (or --feature-set everything). They exercise
+    // the OpenVX graph runtime itself rather than per-kernel throughput.
+    {
+        bool wants_framework = false;
+        for (const auto& fs : config.feature_sets) {
+            if (fs == "framework") { wants_framework = true; break; }
+        }
+        if (wants_framework) {
+            runner.addCases(registerFrameworkBenchmarks());
+        }
+    }
+
     auto results = runner.runAll();
 
     // Generate reports
@@ -314,6 +347,10 @@ int main(int argc, char* argv[]) {
     if (scores.enhanced_count > 0) {
         printf("  Enhanced Vision Score: %.2f MP/s (%d benchmarks)\n",
                scores.enhanced_vision_score, scores.enhanced_count);
+    }
+    if (scores.framework_metric_count > 0) {
+        printf("  OpenVX Framework Score: %.3fx (geomean of %d framework metrics)\n",
+               scores.framework_score, scores.framework_metric_count);
     }
 
     // Feature 2: Stability warning count
@@ -389,6 +426,28 @@ int main(int argc, char* argv[]) {
                        by_lat[i]->wall_clock.median_ns / 1e6,
                        by_lat[i]->mode.c_str(),
                        by_lat[i]->resolution_name.c_str());
+            }
+        }
+    }
+
+    // Framework benchmark summary: print per-scenario metrics so the headline
+    // "graph dividend" numbers are visible at a glance without opening JSON.
+    {
+        std::vector<const BenchmarkResult*> framework;
+        for (const auto& r : results) {
+            if (r.feature_set == "framework" && r.supported &&
+                !r.framework_metrics.empty()) {
+                framework.push_back(&r);
+            }
+        }
+        if (!framework.empty()) {
+            printf("  Framework Benchmarks (%zu):\n", framework.size());
+            for (const auto* r : framework) {
+                printf("    %s @ %s\n", r->name.c_str(), r->resolution_name.c_str());
+                for (const auto& fm : r->framework_metrics) {
+                    printf("      %-22s %10.4f %s\n",
+                           fm.name.c_str(), fm.value, fm.unit.c_str());
+                }
             }
         }
     }
