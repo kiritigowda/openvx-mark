@@ -348,6 +348,10 @@ int main(int argc, char* argv[]) {
         printf("  Enhanced Vision Score: %.2f MP/s (%d benchmarks)\n",
                scores.enhanced_vision_score, scores.enhanced_count);
     }
+    if (scores.framework_metric_count > 0) {
+        printf("  OpenVX Framework Score: %.3fx (geomean of %d framework metrics)\n",
+               scores.framework_score, scores.framework_metric_count);
+    }
 
     // Feature 2: Stability warning count
     if (stability_warnings > 0) {

@@ -252,6 +252,7 @@ Interpreting `parallelism_efficiency`:
 =============================================================
   Summary: 156 total | 156 passed | 0 skipped | 0 failed
   OpenVX Vision Score: 1586.05 MP/s (156 benchmarks)
+  OpenVX Framework Score: 4.872x (geomean of 18 framework metrics)
   vision Conformance: PASS (41/41)
   vision Top-5 Fastest:
     1. Not                           26835.8 MP/s (graph, FHD)
@@ -281,6 +282,7 @@ Interpreting `parallelism_efficiency`:
 - **OpenVX Vision Score** — Geometric mean of MP/s across all passing graph-mode vision benchmarks
 - **Enhanced Vision Score** — Geometric mean when enhanced_vision benchmarks are included
 - **Category Sub-Scores** — Per-category geometric mean (pixelwise, filters, color, etc.)
+- **OpenVX Framework Score** — Equal-weight geometric mean (dimensionless, ×) of all `graph_speedup`, `virtual_dividend`, `parallelism_efficiency`, and `concurrency_speedup` values produced by the framework benchmarks. **>1.0 means the OpenVX graph framework adds aggregate value over a kernel-only baseline.** Lower-is-better metrics (e.g. `verify_per_node_ms`, `async_overhead_ratio`) are intentionally excluded so the score has a single monotonic interpretation. Only emitted when framework benchmarks are run (`--feature-set framework` or `--feature-set everything`).
 
 ### Conformance Summary
 
@@ -334,6 +336,7 @@ python3 scripts/compare_reports.py results_vendor_a/benchmark_results.json \
 | **Sustained Ratio** | `min_ns / median_ns`. Values near 1.0 indicate consistent performance; lower values suggest variance from caching, scheduling, or thermal effects. |
 | **Scaling Efficiency** | `(MP/s at high res) / (MP/s at low res)`. 1.0 = perfect scaling; values below 1.0 indicate memory or bandwidth bottlenecks at higher resolutions. |
 | **Vision Score** | Geometric mean of MP/s across all passing graph-mode vision benchmarks. Single-number summary for cross-vendor comparison. |
+| **Framework Score** | Equal-weight geometric mean (×, dimensionless) of all `graph_speedup`, `virtual_dividend`, `parallelism_efficiency`, and `concurrency_speedup` values produced by framework benchmarks. >1.0 means the OpenVX graph framework adds aggregate value over a kernel-only baseline. Only emitted when framework benchmarks are run. |
 | **Stability Warning** | Flagged when CV% exceeds the stability threshold (default: 15%). Indicates the result may not be reliable — increase iterations or reduce system load. |
 | **Conformance** | Whether all available kernels in a feature set produced valid graph-mode results. PASS = all kernels benchmarked successfully. |
 
