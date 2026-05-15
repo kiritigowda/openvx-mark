@@ -3,8 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+  # Run CI on pull requests targeting any base branch, not just main.
+  # This is necessary for stacked PR workflows where a PR's base is
+  # another feature branch (e.g. an umbrella branch or a previous PR
+  # in a stack); without this, only the final umbrella -> main PR
+  # would get CI coverage.
   pull_request:
-    branches: [main]
 
 jobs:
   benchmark-khronos-mivisionx:
