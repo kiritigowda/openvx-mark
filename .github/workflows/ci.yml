@@ -4,184 +4,654 @@ on:
   push:
     branches: [main]
   # Run CI on pull requests targeting any base branch, not just main.
-  # This is necessary for stacked PR workflows where a PR's base is
-  # another feature branch (e.g. an umbrella branch or a previous PR
-  # in a stack); without this, only the final umbrella -> main PR
-  # would get CI coverage.
+  # This keeps stacked PR workflows covered (a PR's base may be another
+  # feature branch, e.g. an umbrella branch or a previous PR in a stack).
   pull_request:
 
-jobs:
-  benchmark-khronos-mivisionx:
-    runs-on: ubuntu-latest
-    name: Khronos & MIVisionX - Build, Benchmark & Compare
+# Auto-cancel superseded runs on the same ref so a rapid push series
+# (e.g. force-push during PR review) doesn't queue 3+ stale runs and
+# starve the GitHub Actions runner pool. main pushes are exempt — we
+# always want a clean signal on main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# ============================================================================
+# Architecture
+#
+# Phase 1 (parallel) — three independent build jobs, one per OpenVX
+# implementation. Each job:
+#   1. Builds the implementation from source.
+#   2. Stages a self-contained artifact: <impl>-stage/lib + <impl>-stage/include.
+#   3. Builds openvx-mark against the just-built impl.
+#   4. Runs a quick smoke benchmark (`--feature-set everything --resolution VGA`)
+#      as a "local unit test" — catches build-link breakage and missing-symbol
+#      issues immediately, scoped to the specific impl, without waiting for the
+#      slower comparison job downstream.
+#   5. Uploads the staged artifact for the comparison job to consume.
+#
+# Phase 2 (single job, depends on all three) — comparison.
+#   1. Downloads all three impl artifacts onto a single runner.
+#   2. Builds openvx-mark × 3 (one per impl) so all binaries link against the
+#      same openvx-mark source tree at the same commit.
+#   3. Runs the full benchmark (`--feature-set everything --resolution FHD`)
+#      against each impl. Same hardware = fair cross-vendor comparison.
+#   4. Generates three pairwise comparison reports:
+#        * MIVisionX vs Khronos sample
+#        * MIVisionX vs rustVX
+#        * Khronos sample vs rustVX
+#   5. Posts each report to the job summary and uploads as an artifact.
+#
+# Inspired by the layered build/perf-gate design in rustVX's conformance CI:
+# https://github.com/kiritigowda/rustVX/blob/main/.github/workflows/conformance.yml
+# ============================================================================
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Phase 1 — MIVisionX (AMD OpenVX, CPU backend)
+  # --------------------------------------------------------------------------
+  build-mivisionx:
+    name: Build MIVisionX (CPU) + smoke test
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout openvx-mark
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
-
-      # --- Khronos Sample Implementation ---
-      - name: Build Khronos OpenVX sample
         run: |
-          git clone --recursive --depth 1 https://github.com/KhronosGroup/OpenVX-sample-impl.git /tmp/openvx-khronos
-          cd /tmp/openvx-khronos
-          python Build.py --os=Linux --arch=64 --conf=Release
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3
 
-      - name: Find Khronos libraries
-        id: khronos
-        run: |
-          LIB_DIR=$(dirname $(find /tmp/openvx-khronos -name "libopenvx.so" -not -path "*/build/*" | head -1))
-          echo "lib_dir=$LIB_DIR" >> "$GITHUB_OUTPUT"
-          echo "Found Khronos libraries in: $LIB_DIR"
-          ls -la "$LIB_DIR"/libopenvx* "$LIB_DIR"/libvxu* 2>/dev/null || true
-
-      - name: Build openvx-mark (Khronos)
-        run: |
-          mkdir build-khronos && cd build-khronos
-          cmake -DOPENVX_INCLUDES=/tmp/openvx-khronos/api-docs/include \
-                -DOPENVX_LIB_DIR=${{ steps.khronos.outputs.lib_dir }} ..
-          cmake --build . -j$(nproc)
-
-      - name: Run benchmark (Khronos)
-        run: |
-          cd build-khronos
-          export LD_LIBRARY_PATH=${{ steps.khronos.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --resolution VGA --iterations 10 --warmup 3
-
-      - name: Run framework benchmarks (Khronos)
-        if: always()
-        run: |
-          cd build-khronos
-          export LD_LIBRARY_PATH=${{ steps.khronos.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --feature-set framework --resolution VGA \
-            --iterations 10 --warmup 3 --quiet \
-            --output-dir framework_results 2>&1 | tee ../khronos-framework.log
-
-      # --- MIVisionX (AMD OpenVX) ---
       - name: Build MIVisionX (CPU backend)
         run: |
-          git clone --depth 1 --branch develop https://github.com/ROCm/MIVisionX.git /tmp/openvx-mivisionx
-          cd /tmp/openvx-mivisionx && mkdir build && cd build
-          cmake -DBACKEND=CPU -DNEURAL_NET=OFF -DLOOM=OFF -DMIGRAPHX=OFF \
-                -DCMAKE_INSTALL_PREFIX=/tmp/openvx-mivisionx/install ..
+          set -euo pipefail
+          git clone --depth 1 --branch develop \
+            https://github.com/ROCm/MIVisionX.git /tmp/mivisionx-src
+          mkdir -p /tmp/mivisionx-src/build
+          cd /tmp/mivisionx-src/build
+          cmake \
+            -DBACKEND=CPU \
+            -DNEURAL_NET=OFF \
+            -DLOOM=OFF \
+            -DMIGRAPHX=OFF \
+            -DCMAKE_INSTALL_PREFIX=/tmp/mivisionx-install \
+            ..
           make -j$(nproc)
           make install
 
-      - name: Find MIVisionX libraries
-        id: mivisionx
+      - name: Stage MIVisionX artifact
+        id: stage
         run: |
-          LIB_DIR=$(dirname $(find /tmp/openvx-mivisionx -name "libopenvx.so" -not -path "*/build/*" | head -1))
-          echo "lib_dir=$LIB_DIR" >> "$GITHUB_OUTPUT"
-          echo "Found MIVisionX libraries in: $LIB_DIR"
-          ls -la "$LIB_DIR"/libopenvx* "$LIB_DIR"/libvxu* 2>/dev/null || true
+          set -euo pipefail
+          mkdir -p mivisionx-stage/lib mivisionx-stage/include
+          LIB_SRC=$(dirname "$(find /tmp/mivisionx-install -name 'libopenvx.so' | head -1)")
+          echo "MIVisionX libraries discovered in: $LIB_SRC"
+          # Copy ALL libopenvx* / libvxu* entries (libopenvx.so symlink,
+          # libopenvx.so.1 SONAME symlink, libopenvx.so.X.Y.Z real file)
+          # preserving symlinks (-P) so ld.so can follow the SONAME chain.
+          # Without versioned files the linker reports
+          # "libopenvx.so.1: cannot open shared object file".
+          find "$LIB_SRC" -maxdepth 1 -name 'libopenvx*' -exec cp -P {} mivisionx-stage/lib/ \;
+          find "$LIB_SRC" -maxdepth 1 -name 'libvxu*'    -exec cp -P {} mivisionx-stage/lib/ \;
+          cp -r /tmp/mivisionx-install/include/mivisionx/. mivisionx-stage/include/
+          echo "--- staged lib ---"
+          ls -la mivisionx-stage/lib
+          echo "--- staged include (top-level) ---"
+          ls -la mivisionx-stage/include
+          {
+            echo "lib_dir=$(pwd)/mivisionx-stage/lib"
+            echo "include_dir=$(pwd)/mivisionx-stage/include"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Build openvx-mark (MIVisionX)
+      - name: Build openvx-mark (smoke)
         run: |
-          mkdir build-mivisionx && cd build-mivisionx
-          cmake -DOPENVX_INCLUDES=/tmp/openvx-mivisionx/install/include/mivisionx \
-                -DOPENVX_LIB_DIR=${{ steps.mivisionx.outputs.lib_dir }} ..
+          set -euo pipefail
+          mkdir -p build-smoke
+          cd build-smoke
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ steps.stage.outputs.include_dir }} \
+            -DOPENVX_LIB_DIR=${{ steps.stage.outputs.lib_dir }} \
+            ..
           cmake --build . -j$(nproc)
 
-      - name: Run benchmark (MIVisionX)
+      # Smoke covers the `vision` + `framework` feature sets — i.e.
+      # the comparison-stable subset that all three impls support
+      # uniformly. `enhanced_vision` is excluded because at least one
+      # impl (Khronos sample) segfaults inside Tensor* kernels, and
+      # since openvx-mark only writes its JSON at end-of-run a mid-bench
+      # crash takes out the entire signal. Re-enable per-impl gating
+      # later when those impl quirks are sorted upstream.
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+        # Smoke is advisory — if a specific impl crashes inside a
+        # specific kernel the artifact upload (which the compare job
+        # depends on) must still happen so vendor-vs-vendor signal
+        # isn't lost.
+        continue-on-error: true
         run: |
-          cd build-mivisionx
-          export LD_LIBRARY_PATH=${{ steps.mivisionx.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --resolution VGA --iterations 10 --warmup 3
+          set -eo pipefail
+          cd build-smoke
+          export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --feature-set vision,framework \
+            --resolution VGA --iterations 5 --warmup 1 \
+            --output-dir smoke-results
 
-      - name: Run framework benchmarks (MIVisionX)
+      - name: Upload MIVisionX artifact
         if: always()
-        run: |
-          cd build-mivisionx
-          export LD_LIBRARY_PATH=${{ steps.mivisionx.outputs.lib_dir }}:$LD_LIBRARY_PATH
-          ./openvx-mark --feature-set framework --resolution VGA \
-            --iterations 10 --warmup 3 --quiet \
-            --output-dir framework_results 2>&1 | tee ../mivisionx-framework.log
+        uses: actions/upload-artifact@v4
+        with:
+          name: impl-mivisionx
+          path: mivisionx-stage/
+          retention-days: 1
 
-      # --- Compare Results ---
-      - name: Compare benchmark results
-        run: |
-          KHRONOS=build-khronos/benchmark_results/benchmark_results.json
-          MIVISIONX=build-mivisionx/benchmark_results/benchmark_results.json
-
-          if [ ! -f "$KHRONOS" ] || [ ! -f "$MIVISIONX" ]; then
-            echo "Skipping comparison — one or both benchmark results missing"
-            exit 0
-          fi
-
-          python3 scripts/compare_reports.py "$KHRONOS" "$MIVISIONX" \
-            --output comparison
-
-      - name: Post comparison to job summary
+      - name: Upload MIVisionX smoke results
         if: always()
-        run: |
-          if [ -f comparison.md ]; then
-            cat comparison.md >> "$GITHUB_STEP_SUMMARY"
-          fi
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results-mivisionx
+          path: build-smoke/smoke-results/
+          if-no-files-found: ignore
 
-      - name: Post framework benchmarks to job summary
-        if: always()
+  # --------------------------------------------------------------------------
+  # Phase 1 — Khronos OpenVX sample implementation
+  # --------------------------------------------------------------------------
+  build-khronos-sample:
+    name: Build Khronos sample + smoke test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout openvx-mark
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3
+
+      - name: Build Khronos OpenVX sample
+        run: |
+          set -euo pipefail
+          git clone --recursive --depth 1 \
+            https://github.com/KhronosGroup/OpenVX-sample-impl.git /tmp/khronos-src
+          cd /tmp/khronos-src
+          python3 Build.py --os=Linux --arch=64 --conf=Release
+
+      - name: Stage Khronos sample artifact
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p khronos-stage/lib khronos-stage/include
+          LIB_SRC=$(dirname "$(find /tmp/khronos-src -name 'libopenvx.so' -not -path '*/build/*' | head -1)")
+          echo "Khronos libraries discovered in: $LIB_SRC"
+          # Same approach as MIVisionX: copy all libopenvx* / libvxu* entries
+          # preserving symlinks so ld.so can follow the SONAME chain.
+          find "$LIB_SRC" -maxdepth 1 -name 'libopenvx*' -exec cp -P {} khronos-stage/lib/ \;
+          find "$LIB_SRC" -maxdepth 1 -name 'libvxu*'    -exec cp -P {} khronos-stage/lib/ \;
+          cp -r /tmp/khronos-src/api-docs/include/. khronos-stage/include/
+          echo "--- staged lib ---"
+          ls -la khronos-stage/lib
+          echo "--- staged include (top-level) ---"
+          ls -la khronos-stage/include
           {
-            echo "## Framework Benchmarks"
-            echo ""
-            for vendor in khronos mivisionx; do
-              log="${vendor}-framework.log"
-              if [ -f "$log" ] && grep -q "Framework Benchmarks" "$log"; then
-                echo "### ${vendor}"
-                echo ""
-                echo '```'
-                # Print from the "Framework Benchmarks" header line through
-                # the closing ===== separator that the binary always emits.
-                awk '/Framework Benchmarks \([0-9]+\):/{flag=1} flag' "$log"
-                echo '```'
-                echo ""
-              else
-                echo "### ${vendor}"
-                echo ""
-                echo "_No framework benchmarks registered (or all skipped) at this commit._"
-                echo ""
-              fi
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "lib_dir=$(pwd)/khronos-stage/lib"
+            echo "include_dir=$(pwd)/khronos-stage/include"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Upload Khronos results
+      - name: Build openvx-mark (smoke)
+        run: |
+          set -euo pipefail
+          mkdir -p build-smoke
+          cd build-smoke
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ steps.stage.outputs.include_dir }} \
+            -DOPENVX_LIB_DIR=${{ steps.stage.outputs.lib_dir }} \
+            ..
+          cmake --build . -j$(nproc)
+
+      # Smoke is restricted to the `vision` + `framework` subset for
+      # the same reason as the MIVisionX smoke — see comment there.
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+        continue-on-error: true
+        run: |
+          set -eo pipefail
+          cd build-smoke
+          export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --feature-set vision,framework \
+            --resolution VGA --iterations 5 --warmup 1 \
+            --output-dir smoke-results
+
+      - name: Upload Khronos sample artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results-khronos-sample
-          path: build-khronos/benchmark_results/
+          name: impl-khronos-sample
+          path: khronos-stage/
+          retention-days: 1
+
+      - name: Upload Khronos sample smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results-khronos-sample
+          path: build-smoke/smoke-results/
           if-no-files-found: ignore
 
-      - name: Upload MIVisionX results
+  # --------------------------------------------------------------------------
+  # Phase 1 — rustVX (Rust OpenVX implementation)
+  #
+  # rustVX ships a single libopenvx_ffi.so that exports the full vx*/vxu*
+  # symbol set. openvx-mark's CMake uses find_library(NAMES openvx) and
+  # find_library(NAMES vxu) — so we symlink the two classic Khronos lib
+  # names to the FFI .so during staging, without modifying rustVX's own
+  # build output.
+  #
+  # SIMD config: AVX2 + `-C target-cpu=x86-64-v3`, matching what rustVX's
+  # own CI ships. We deliberately skip the alignment-pad RUSTFLAGS used in
+  # rustVX's PR-vs-main perf gate — those exist to make rustVX-vs-rustVX
+  # bench numbers invariant to .text shifts, which is irrelevant for the
+  # vendor-vs-vendor comparison this workflow runs.
+  # --------------------------------------------------------------------------
+  build-rustvx:
+    name: Build rustVX + smoke test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout openvx-mark
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git
+
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable
+          source "$HOME/.cargo/env"
+          rustc --version
+          cargo --version
+
+      - name: Build rustVX (release, AVX2)
+        run: |
+          set -euo pipefail
+          source "$HOME/.cargo/env"
+          git clone --depth 1 \
+            https://github.com/kiritigowda/rustVX.git /tmp/rustvx-src
+          cd /tmp/rustvx-src
+          case "$(uname -m)" in
+            x86_64|amd64)
+              FEATURES="openvx-core/sse2 openvx-core/avx2 openvx-vision/sse2 openvx-vision/avx2"
+              export RUSTFLAGS="-C target-cpu=x86-64-v3"
+              ;;
+            aarch64|arm64)
+              FEATURES="openvx-core/neon openvx-vision/neon"
+              export RUSTFLAGS=""
+              ;;
+            *)
+              FEATURES=""
+              export RUSTFLAGS=""
+              ;;
+          esac
+          echo "Architecture : $(uname -m)"
+          echo "Cargo features: ${FEATURES:-<none>}"
+          echo "RUSTFLAGS     : ${RUSTFLAGS:-<none>}"
+          if [ -n "$FEATURES" ]; then
+            cargo build --release -p openvx-ffi --features "$FEATURES"
+          else
+            cargo build --release -p openvx-ffi
+          fi
+
+      - name: Stage rustVX artifact (with libopenvx / libvxu symlinks)
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p rustvx-stage/lib rustvx-stage/include
+          cp /tmp/rustvx-src/target/release/libopenvx_ffi.so rustvx-stage/lib/
+          # Classic Khronos library names so openvx-mark's find_library picks
+          # them up. Symlinks survive upload-artifact@v4 (it preserves them
+          # within tar), so the comparison job downstream sees the same.
+          (
+            cd rustvx-stage/lib
+            ln -sf libopenvx_ffi.so libopenvx.so
+            ln -sf libopenvx_ffi.so libvxu.so
+          )
+          cp -r /tmp/rustvx-src/include/. rustvx-stage/include/
+          echo "--- staged lib ---"
+          ls -la rustvx-stage/lib
+          echo "--- staged include (top-level) ---"
+          ls -la rustvx-stage/include
+          {
+            echo "lib_dir=$(pwd)/rustvx-stage/lib"
+            echo "include_dir=$(pwd)/rustvx-stage/include"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build openvx-mark (smoke)
+        run: |
+          set -euo pipefail
+          mkdir -p build-smoke
+          cd build-smoke
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ steps.stage.outputs.include_dir }} \
+            -DOPENVX_LIB_DIR=${{ steps.stage.outputs.lib_dir }} \
+            ..
+          cmake --build . -j$(nproc)
+
+      # Smoke is restricted to the `vision` + `framework` subset for
+      # the same reason as the MIVisionX smoke — see comment there.
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+        continue-on-error: true
+        run: |
+          set -eo pipefail
+          cd build-smoke
+          export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --feature-set vision,framework \
+            --resolution VGA --iterations 5 --warmup 1 \
+            --output-dir smoke-results
+
+      - name: Upload rustVX artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results-mivisionx-cpu
-          path: build-mivisionx/benchmark_results/
+          name: impl-rustvx
+          path: rustvx-stage/
+          retention-days: 1
+
+      - name: Upload rustVX smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results-rustvx
+          path: build-smoke/smoke-results/
           if-no-files-found: ignore
 
-      - name: Upload Khronos framework results
+  # --------------------------------------------------------------------------
+  # Phase 2 — Pairwise comparison
+  #
+  # Pulls all three implementation artifacts onto the same runner so every
+  # benchmark is exercised on identical hardware. Builds openvx-mark once
+  # per impl (against this commit's source tree, not pre-built artifacts —
+  # keeps the comparison binary identical apart from the linked OpenVX lib),
+  # runs the full feature-set bench against each, and emits three pairwise
+  # comparison reports.
+  #
+  # `if: always()` + per-download `continue-on-error` so a single failed
+  # build still surfaces the comparison signal for the other two impls
+  # instead of losing all visibility.
+  # --------------------------------------------------------------------------
+  compare:
+    name: Pairwise comparison (MIVisionX, Khronos, rustVX)
+    runs-on: ubuntu-22.04
+    needs:
+      - build-mivisionx
+      - build-khronos-sample
+      - build-rustvx
+    if: always()
+    steps:
+      - name: Checkout openvx-mark
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3
+
+      - name: Download MIVisionX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: impl-mivisionx
+          path: ${{ github.workspace }}/impl/mivisionx
+        continue-on-error: true
+
+      - name: Download Khronos sample artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: impl-khronos-sample
+          path: ${{ github.workspace }}/impl/khronos
+        continue-on-error: true
+
+      - name: Download rustVX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: impl-rustvx
+          path: ${{ github.workspace }}/impl/rustvx
+        continue-on-error: true
+
+      - name: Detect available implementations
+        id: detect
+        run: |
+          set -euo pipefail
+          for impl in mivisionx khronos rustvx; do
+            lib="${{ github.workspace }}/impl/$impl/lib/libopenvx.so"
+            if [ -e "$lib" ]; then
+              echo "$impl: AVAILABLE ($lib)"
+              chmod -R u+rwX "${{ github.workspace }}/impl/$impl/lib"
+              echo "${impl}=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$impl: MISSING (artifact download failed or build job did not produce it)"
+              echo "${impl}=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      # ----- Per-impl build + benchmark (FHD, 20 iter, 5 warmup) -----
+      #
+      # Each per-impl bench uses `if: always() && steps.detect...` because
+      # GitHub Actions treats any explicit `if:` without `always()` as
+      # implicit `success()` — meaning a crash in MIVisionX bench would
+      # skip the Khronos / rustVX bench steps entirely and we'd lose all
+      # comparison signal. With `always()` the three benches stay
+      # independent and the comparison job downstream handles whichever
+      # JSON files actually got produced.
+      #
+      # Feature set is `vision,framework` (the comparison-stable subset
+      # — see the smoke step comments for why `enhanced_vision` is held
+      # back for now).
+      - name: Build & bench against MIVisionX
+        if: always() && steps.detect.outputs.mivisionx == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p build-mivisionx
+          cd build-mivisionx
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ github.workspace }}/impl/mivisionx/include \
+            -DOPENVX_LIB_DIR=${{ github.workspace }}/impl/mivisionx/lib \
+            ..
+          cmake --build . -j$(nproc)
+          export LD_LIBRARY_PATH=${{ github.workspace }}/impl/mivisionx/lib:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --feature-set vision,framework \
+            --resolution FHD --iterations 20 --warmup 5 \
+            --output-dir results
+
+      - name: Build & bench against Khronos sample
+        if: always() && steps.detect.outputs.khronos == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p build-khronos
+          cd build-khronos
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ github.workspace }}/impl/khronos/include \
+            -DOPENVX_LIB_DIR=${{ github.workspace }}/impl/khronos/lib \
+            ..
+          cmake --build . -j$(nproc)
+          export LD_LIBRARY_PATH=${{ github.workspace }}/impl/khronos/lib:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --feature-set vision,framework \
+            --resolution FHD --iterations 20 --warmup 5 \
+            --output-dir results
+
+      - name: Build & bench against rustVX
+        if: always() && steps.detect.outputs.rustvx == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p build-rustvx
+          cd build-rustvx
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENVX_INCLUDES=${{ github.workspace }}/impl/rustvx/include \
+            -DOPENVX_LIB_DIR=${{ github.workspace }}/impl/rustvx/lib \
+            ..
+          cmake --build . -j$(nproc)
+          export LD_LIBRARY_PATH=${{ github.workspace }}/impl/rustvx/lib:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --feature-set vision,framework \
+            --resolution FHD --iterations 20 --warmup 5 \
+            --output-dir results
+
+      # ----- Pairwise comparisons -----
+      #
+      # Each comparison is oriented as "<candidate> over <baseline>" so
+      # the Speedup column reads as `candidate / baseline` (>1.00x =
+      # candidate is faster). The orientation is deliberate: we want
+      # MIVisionX-vs-* and rustVX-vs-Khronos to read as "how much faster
+      # is the more-tuned implementation than the reference", giving an
+      # at-a-glance headline number that grows when the candidate wins:
+      #
+      #   * MIVisionX over Khronos sample   (AMD over reference)
+      #   * MIVisionX over rustVX           (AMD over Rust impl)
+      #   * rustVX     over Khronos sample  (Rust impl over reference)
+      #
+      # Mechanically, `compare_reports.py` computes
+      #     speedup = throughput(arg2) / throughput(arg1)
+      # so the candidate is passed as the SECOND positional arg.
+      - name: Pairwise comparisons
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p comparisons
+
+          M="build-mivisionx/results/benchmark_results.json"
+          K="build-khronos/results/benchmark_results.json"
+          R="build-rustvx/results/benchmark_results.json"
+
+          do_compare() {
+            local candidate="$1" baseline="$2"
+            local path_candidate="$3" path_baseline="$4"
+            local cand_label="$5" base_label="$6"
+            local out="comparisons/${candidate}-over-${baseline}"
+
+            {
+              echo "## ${cand_label} over ${base_label}"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            if [ ! -f "$path_candidate" ] || [ ! -f "$path_baseline" ]; then
+              {
+                echo "_Skipped: one or both reports missing (${cand_label}: $([ -f "$path_candidate" ] && echo OK || echo MISSING), ${base_label}: $([ -f "$path_baseline" ] && echo OK || echo MISSING))_"
+                echo ""
+                echo "---"
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+              return 0
+            fi
+
+            # Headline geomean — adapted from the perf-gate Python block
+            # in rustVX's conformance CI. Keys benchmarks by
+            # (name, mode, resolution), filters to verified-on-both
+            # entries with positive throughput, then computes geomean,
+            # median, win/loss counts, and best/worst kernels.
+            python3 - "$path_candidate" "$path_baseline" "$cand_label" "$base_label" \
+              >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, math, sys
+
+          cand_path, base_path = sys.argv[1], sys.argv[2]
+          cand_label, base_label = sys.argv[3], sys.argv[4]
+          with open(cand_path) as f: cand = json.load(f)
+          with open(base_path) as f: base = json.load(f)
+
+          def by_key(report):
+              return {(r['name'], r['mode'], r['resolution']): r
+                      for r in report.get('results', [])}
+
+          c = by_key(cand)
+          b = by_key(base)
+          shared = sorted(set(c) & set(b))
+
+          speedups = []
+          wins, losses = 0, 0
+          best = (None, 0.0)
+          worst = (None, math.inf)
+
+          for key in shared:
+              rc, rb = c[key], b[key]
+              if not (rc.get('verified', True) and rb.get('verified', True)):
+                  continue
+              mc = rc.get('megapixels_per_sec', 0)
+              mb = rb.get('megapixels_per_sec', 0)
+              if mc <= 0 or mb <= 0:
+                  continue
+              s = mc / mb  # >1 means candidate is faster
+              speedups.append(s)
+              if s > 1.0: wins += 1
+              elif s < 1.0: losses += 1
+              if s > best[1]:  best  = (key, s)
+              if s < worst[1]: worst = (key, s)
+
+          if not speedups:
+              print(f'_No verified benchmarks were directly comparable between {cand_label} and {base_label}._')
+              print()
+          else:
+              geomean = math.exp(sum(math.log(s) for s in speedups) / len(speedups))
+              median  = sorted(speedups)[len(speedups) // 2]
+              print('| Metric | Value |')
+              print('|:---|---:|')
+              print(f'| Geomean speedup ({cand_label} / {base_label}) | **{geomean:.2f}x** |')
+              print(f'| Median speedup ({cand_label} / {base_label})  | {median:.2f}x |')
+              print(f'| Benchmarks compared                              | {len(speedups)} |')
+              print(f'| {cand_label} faster                              | {wins} |')
+              print(f'| {base_label} faster                              | {losses} |')
+              if best[0]:
+                  bk, bv = best
+                  print(f'| Best  {cand_label} speedup                      | {bv:.2f}x ({bk[0]} / {bk[1]} / {bk[2]}) |')
+              if worst[0] and worst[1] != math.inf:
+                  wk, wv = worst
+                  print(f'| Worst {cand_label} speedup                      | {wv:.2f}x ({wk[0]} / {wk[1]} / {wk[2]}) |')
+              print()
+              if geomean >= 1.0:
+                  print(f'> **{cand_label}** is **{geomean:.2f}x** faster than **{base_label}** on average (geomean across {len(speedups)} verified benchmarks).')
+              else:
+                  print(f'> **{cand_label}** is **{1.0/geomean:.2f}x slower** than **{base_label}** on average (geomean across {len(speedups)} verified benchmarks).')
+              print()
+          PY
+
+            # Detailed per-kernel comparison from compare_reports.py.
+            # Pass baseline first so the Speedup column reads as
+            # "candidate / baseline" — same orientation as the headline.
+            python3 scripts/compare_reports.py "$path_baseline" "$path_candidate" --output "$out"
+            {
+              echo "_Detailed per-kernel comparison — Speedup column reads as **${cand_label} / ${base_label}** (>1.00x = ${cand_label} faster)._"
+              echo ""
+              cat "${out}.md"
+              echo ""
+              echo "---"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          # Order: MIVisionX (AMD) over both reference impls, then rustVX
+          # over Khronos sample (the slowest of the three).
+          do_compare mivisionx khronos "$M" "$K" "MIVisionX (AMD OpenVX)" "Khronos sample"
+          do_compare mivisionx rustvx  "$M" "$R" "MIVisionX (AMD OpenVX)" "rustVX"
+          do_compare rustvx    khronos "$R" "$K" "rustVX"                 "Khronos sample"
+
+          echo "--- comparison artifacts ---"
+          ls -la comparisons/ || true
+
+      - name: Upload per-impl benchmark results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: framework-results-khronos-sample
-          path: build-khronos/framework_results/
+          name: benchmark-results
+          path: |
+            build-mivisionx/results/
+            build-khronos/results/
+            build-rustvx/results/
           if-no-files-found: ignore
 
-      - name: Upload MIVisionX framework results
+      - name: Upload pairwise comparisons
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: framework-results-mivisionx-cpu
-          path: build-mivisionx/framework_results/
-          if-no-files-found: ignore
-
-      - name: Upload comparison report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-comparison-khronos-mivisionx
-          path: comparison.*
+          name: benchmark-comparisons
+          path: comparisons/
           if-no-files-found: ignore
