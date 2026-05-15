@@ -237,6 +237,148 @@ BenchmarkResult runGraphDividend(const std::vector<ChainStage>& stages,
     return r;
 }
 
+// Time K back-to-back vxuBox3x3 calls writing to K independent outputs.
+// This is the strict-serial baseline for the parallel_branches scenario:
+// immediate-mode dispatch admits no scheduling parallelism even on
+// multi-core hosts, so it is the right "no parallelism opportunity"
+// reference to compare against the graph form.
+double timeSerialImmediateBranches(vx_context ctx, uint32_t width, uint32_t height,
+                                   int branches, int warmup, int iterations,
+                                   TestDataGenerator& gen) {
+    if (branches < 1) return 0.0;
+    ResourceTracker tracker;
+
+    vx_image input = gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8);
+    if (vxGetStatus((vx_reference)input) != VX_SUCCESS) return 0.0;
+    tracker.trackImage(input);
+
+    std::vector<vx_image> outputs;
+    outputs.reserve(branches);
+    for (int i = 0; i < branches; i++) {
+        vx_image out = vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8);
+        if (vxGetStatus((vx_reference)out) != VX_SUCCESS) return 0.0;
+        tracker.trackImage(out);
+        outputs.push_back(out);
+    }
+
+    auto runOnce = [&]() -> vx_status {
+        for (int i = 0; i < branches; i++) {
+            vx_status s = vxuBox3x3(ctx, input, outputs[i]);
+            if (s != VX_SUCCESS) return s;
+        }
+        return VX_SUCCESS;
+    };
+
+    for (int i = 0; i < warmup; i++) runOnce();
+
+    std::vector<double> samples;
+    samples.reserve(iterations);
+    BenchmarkTimer timer;
+    for (int i = 0; i < iterations; i++) {
+        timer.start();
+        if (runOnce() != VX_SUCCESS) return 0.0;
+        timer.stop();
+        samples.push_back(timer.elapsed_ns());
+    }
+    return BenchmarkStats::compute(samples).median_ns;
+}
+
+// Build one graph with K independent Box3x3 nodes, all reading the same
+// input and writing to K independent real outputs. This is a textbook
+// parallelism opportunity: the K nodes have no data dependency on each
+// other, so a competent scheduler is free to dispatch them concurrently
+// across cores / targets / queues.
+double timeParallelGraphBranches(vx_context ctx, uint32_t width, uint32_t height,
+                                 int branches, int warmup, int iterations,
+                                 TestDataGenerator& gen) {
+    if (branches < 1) return 0.0;
+    ResourceTracker tracker;
+
+    vx_image input = gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8);
+    if (vxGetStatus((vx_reference)input) != VX_SUCCESS) return 0.0;
+    tracker.trackImage(input);
+
+    vx_graph graph = vxCreateGraph(ctx);
+    if (vxGetStatus((vx_reference)graph) != VX_SUCCESS) return 0.0;
+    tracker.trackGraph(graph);
+
+    for (int i = 0; i < branches; i++) {
+        // Real (non-virtual) outputs ensure each branch produces an
+        // observable side effect so dead-code elimination can't silently
+        // drop branches.
+        vx_image out = vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8);
+        if (vxGetStatus((vx_reference)out) != VX_SUCCESS) return 0.0;
+        tracker.trackImage(out);
+
+        vx_node node = vxBox3x3Node(graph, input, out);
+        if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return 0.0;
+        tracker.trackNode(node);
+    }
+
+    if (vxVerifyGraph(graph) != VX_SUCCESS) return 0.0;
+
+    for (int i = 0; i < warmup; i++) vxProcessGraph(graph);
+
+    std::vector<double> samples;
+    samples.reserve(iterations);
+    BenchmarkTimer timer;
+    for (int i = 0; i < iterations; i++) {
+        timer.start();
+        if (vxProcessGraph(graph) != VX_SUCCESS) return 0.0;
+        timer.stop();
+        samples.push_back(timer.elapsed_ns());
+    }
+    return BenchmarkStats::compute(samples).median_ns;
+}
+
+// K = 4 independent branches is enough opportunity to expose any scheduling
+// parallelism on every modern multi-core host, while keeping the work small
+// enough that a single-core fallback still completes quickly. Future PRs
+// can promote this to a CLI option if cross-machine variance demands it.
+constexpr int kParallelBranchesCount = 4;
+
+BenchmarkResult runParallelBranches(vx_context ctx, const Resolution& res,
+                                    const BenchmarkConfig& cfg) {
+    BenchmarkResult r;
+    r.iterations = cfg.iterations;
+    r.warmup = cfg.warmup;
+
+    const int K = kParallelBranchesCount;
+    TestDataGenerator gen(cfg.seed);
+
+    double t_serial_imm = timeSerialImmediateBranches(
+        ctx, res.width, res.height, K, cfg.warmup, cfg.iterations, gen);
+    double t_parallel = timeParallelGraphBranches(
+        ctx, res.width, res.height, K, cfg.warmup, cfg.iterations, gen);
+
+    if (t_serial_imm <= 0.0 || t_parallel <= 0.0) {
+        r.supported = false;
+        r.skip_reason = "parallel branches timing failed";
+        return r;
+    }
+
+    double speedup = t_serial_imm / t_parallel;
+    double efficiency = speedup / static_cast<double>(K);
+
+    r.framework_metrics = {
+        {"branches",                static_cast<double>(K), "count", false},
+        {"serial_immediate_ms",     t_serial_imm / 1e6,     "ms",    false},
+        {"parallel_graph_ms",       t_parallel   / 1e6,     "ms",    false},
+        {"parallelism_speedup",     speedup,                "x",     true},
+        {"parallelism_efficiency",  efficiency,             "x",     true},
+    };
+
+    r.wall_clock.median_ns = t_parallel;
+    r.wall_clock.mean_ns = t_parallel;
+    r.wall_clock.min_ns = t_parallel;
+    r.wall_clock.max_ns = t_parallel;
+    r.wall_clock.sample_count = static_cast<size_t>(cfg.iterations);
+    r.megapixels_per_sec = BenchmarkStats::computeThroughput(
+        res.width, res.height, t_parallel);
+
+    return r;
+}
+
 // Per-N timings collected by runVerifyChain; one of these is produced per
 // chain depth and feeds both the per-N metrics and the slope regression.
 struct VerifySample {
@@ -526,6 +668,20 @@ std::vector<BenchmarkCase> registerFrameworkBenchmarks() {
         bc.framework_run = [](vx_context ctx, const Resolution& res,
                               const BenchmarkConfig& cfg) -> BenchmarkResult {
             return runVerifyChain(ctx, res, cfg);
+        };
+        cases.push_back(bc);
+    }
+
+    {
+        BenchmarkCase bc;
+        bc.name = "ParallelBranches_Box3x3";
+        bc.category = "framework_parallel";
+        bc.feature_set = "framework";
+        bc.kernel_enum = VX_KERNEL_BOX_3x3;
+        bc.required_kernels = {VX_KERNEL_BOX_3x3};
+        bc.framework_run = [](vx_context ctx, const Resolution& res,
+                              const BenchmarkConfig& cfg) -> BenchmarkResult {
+            return runParallelBranches(ctx, res, cfg);
         };
         cases.push_back(bc);
     }
