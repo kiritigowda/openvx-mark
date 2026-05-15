@@ -18,9 +18,10 @@ static void printUsage(const char* prog) {
            OPENVX_MARK_VERSION, GIT_COMMIT_SHA);
 
     printf("Benchmark Selection:\n");
-    printf("  --all                         Run all benchmarks (default)\n");
-    printf("  --feature-set SET[,SET,...]   Feature sets: vision,enhanced_vision,all\n");
-    printf("                                (default: vision)\n");
+    printf("  --all                         Run all kernel benchmarks (vision + enhanced_vision)\n");
+    printf("  --feature-set SET[,SET,...]   Feature sets: vision,enhanced_vision,framework,all,everything\n");
+    printf("                                (default: vision; 'all' = kernels only;\n");
+    printf("                                 'everything' = kernels + framework)\n");
     printf("  --category CAT[,CAT,...]      Filter by category (pixelwise,filters,color,\n");
     printf("                                geometric,statistical,multiscale,feature,\n");
     printf("                                extraction,tensor,misc,immediate,\n");
@@ -96,7 +97,10 @@ static bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
                 if (s == "all") {
                     config.feature_sets = {"vision", "enhanced_vision"};
                     break;
-                } else if (s == "vision" || s == "enhanced_vision") {
+                } else if (s == "everything") {
+                    config.feature_sets = {"vision", "enhanced_vision", "framework"};
+                    break;
+                } else if (s == "vision" || s == "enhanced_vision" || s == "framework") {
                     config.feature_sets.push_back(s);
                 } else {
                     printf("WARNING: Unknown feature set '%s', skipping\n", s.c_str());

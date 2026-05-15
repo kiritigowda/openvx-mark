@@ -452,7 +452,18 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
                 writeTimingJSON(f, "        ", r.vx_perf);
                 f << "\n      }";
             }
-            f << "\n";
+            f << ",\n      \"framework_metrics\": [";
+            for (size_t fm_i = 0; fm_i < r.framework_metrics.size(); fm_i++) {
+                const auto& fm = r.framework_metrics[fm_i];
+                if (fm_i > 0) f << ",";
+                f << "\n        {\"name\": \"" << jsonEscape(fm.name)
+                  << "\", \"value\": " << std::fixed << std::setprecision(6) << fm.value
+                  << ", \"unit\": \"" << jsonEscape(fm.unit)
+                  << "\", \"higher_is_better\": " << (fm.higher_is_better ? "true" : "false")
+                  << "}";
+            }
+            if (!r.framework_metrics.empty()) f << "\n      ";
+            f << "]\n";
         }
 
         f << "    }";
