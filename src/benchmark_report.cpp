@@ -1397,19 +1397,22 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
     // --- Framework Metrics Comparison ---
     //
     // Layout intent (uniform & intuitive — mirrors scripts/compare_reports.py):
-    //   * One H3 subsection per (benchmark, resolution) scenario, so 30+
-    //     mixed metrics aren't mashed into one flat table.
-    //   * Direction is conveyed by an inline glyph next to the metric
-    //     name (↑ higher-better, ↓ lower-better, · descriptive); no
-    //     separate Direction column whose value would repeat endlessly.
-    //   * The "B/A Ratio" column is ALWAYS oriented as "how many times
-    //     better B is than A" — for higher-better metrics that's B/A,
-    //     for lower-better that's A/B (inverted). Matches the kernel
-    //     comparison's Speedup convention: >1.00x always = B wins.
-    //   * Bold the ratio when B wins (>1.00x).
-    //   * Descriptive metrics (unit=="count") get no ratio — they're
-    //     structural, not performance signals.
-    //   * Per-scenario footer line summarising win/loss + geomean.
+    //
+    //   * One H3 subsection per (benchmark, resolution) scenario.
+    //   * Within each scenario, metrics are split by direction into up
+    //     to three H4 sub-tables: ↑ higher-is-better, ↓ lower-is-better,
+    //     · descriptive. Each sub-table is internally uniform — every
+    //     row uses the SAME ratio formula and the SAME "what counts as
+    //     a win" rule.
+    //   * The ratio column is ALWAYS the literal raw `B/A`. No
+    //     per-row inversion. The H4 heading tells the reader whether
+    //     bigger or smaller is the winning direction:
+    //       - ↑ table: bold when ratio > 1.00x (B is bigger = better)
+    //       - ↓ table: bold when ratio < 1.00x (B is smaller = better)
+    //   * Descriptive metrics (unit=="count") get a stripped-down
+    //     no-ratio sub-table.
+    //   * Per-scenario summary line aggregating B's win count across
+    //     all comparable metrics.
     {
         struct FwKey { std::string display; };
         std::map<std::string, FwKey> fw_keys;
@@ -1427,30 +1430,85 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
         noteFw(baseline_map);
         noteFw(current_map);
 
-        // Classify a metric: returns 0 (higher-better), 1 (lower-better),
-        // 2 (descriptive); the glyph follows the same ordering.
-        auto classify = [](const FwMetric* m) -> std::pair<int, const char*> {
-            if (!m) return {0, "↑"};
-            if (m->unit == "count") return {2, "·"};
-            return m->higher_is_better ? std::make_pair(0, "↑")
-                                       : std::make_pair(1, "↓");
+        // Classify a metric: 0 = higher-better, 1 = lower-better, 2 = descriptive.
+        auto classify = [](const FwMetric* m) -> int {
+            if (!m) return 0;
+            if (m->unit == "count") return 2;
+            return m->higher_is_better ? 0 : 1;
+        };
+
+        // Render one sub-table for a given direction band (0 or 1) and
+        // accumulate B's win count into the per-scenario totals.
+        struct Row {
+            std::string name;
+            const FwMetric* a;
+            const FwMetric* b;
+        };
+        auto write_table = [&](std::ostream& os, const std::vector<Row>& rows,
+                               int direction, int& wins_b_out, int& comparable_out) {
+            const bool descriptive = (direction == 2);
+            if (descriptive) {
+                os << "| Metric | Unit | " << name_a << " | " << name_b << " |\n";
+                os << "|:---|:---|---:|---:|\n";
+            } else {
+                os << "| Metric | Unit | " << name_a << " | " << name_b
+                   << " | B/A Ratio |\n";
+                os << "|:---|:---|---:|---:|---:|\n";
+            }
+            for (const auto& row : rows) {
+                std::string unit = row.a ? row.a->unit
+                                   : (row.b ? row.b->unit : std::string());
+                double a_val = row.a ? row.a->value : 0.0;
+                double b_val = row.b ? row.b->value : 0.0;
+
+                os << "| `" << row.name << "` | "
+                   << (unit.empty() ? "—" : unit) << " | ";
+                if (row.a) os << std::fixed << std::setprecision(3) << a_val;
+                else os << "—";
+                os << " | ";
+                if (row.b) os << std::fixed << std::setprecision(3) << b_val;
+                else os << "—";
+
+                if (descriptive) {
+                    os << " |\n";
+                    continue;
+                }
+
+                os << " | ";
+                if (row.a && row.b && a_val > 0 && b_val > 0) {
+                    double ratio = b_val / a_val;  // always literal B/A
+                    comparable_out++;
+                    bool b_wins = (direction == 0) ? (ratio > 1.0) : (ratio < 1.0);
+                    if (b_wins) {
+                        wins_b_out++;
+                        os << "**" << std::fixed << std::setprecision(2)
+                           << ratio << "x**";
+                    } else {
+                        os << std::fixed << std::setprecision(2) << ratio << "x";
+                    }
+                } else {
+                    os << "—";
+                }
+                os << " |\n";
+            }
         };
 
         if (!fw_keys.empty()) {
             f << "## Framework Metrics Comparison\n\n";
             f << "> Per-scenario framework metrics — graph orchestration, "
-              << "scheduling, async streaming, verify cost. The **B/A Ratio** "
-              << "column always reads as \"_how many times better " << name_b
-              << " is than " << name_a << "_\" — values >1.00x mean **"
-              << name_b << " wins**, regardless of whether the underlying "
-              << "metric is higher- or lower-is-better.\n>\n"
-              << ">   * `↑` higher-is-better (throughput, speedup, fusion ratio) — Ratio = "
-              << name_b << " / " << name_a << "\n"
-              << ">   * `↓` lower-is-better (latency, overhead in ms)            — Ratio = "
-              << name_a << " / " << name_b
-              << " (inverted so >1.00x still favours " << name_b << ")\n"
-              << ">   * `·` descriptive (counts, sizes)                           — structural, no ratio\n>\n"
-              << "> Bold ratios indicate **" << name_b << " wins** on that metric.\n\n";
+              << "scheduling, async streaming, verify cost. Each scenario "
+              << "is split into up to three sub-tables grouped by metric "
+              << "direction so every row in a given table follows the same "
+              << "rule:\n>\n"
+              << ">   * **↑ Higher-is-better** — throughput, speedup, fusion ratio. Ratio = "
+              << name_b << " / " << name_a << "; **" << name_b
+              << " wins when ratio > 1.00x**.\n"
+              << ">   * **↓ Lower-is-better** — latency, overhead in ms. Ratio = "
+              << name_b << " / " << name_a << " (raw, no inversion); **"
+              << name_b << " wins when ratio < 1.00x** because lower is better here.\n"
+              << ">   * **· Descriptive** — counts and structural sizes; no ratio shown.\n>\n"
+              << "> **Bold** ratios mark cells where " << name_b
+              << " wins, regardless of direction.\n\n";
 
             for (const auto& [key, fk] : fw_keys) {
                 std::string base_key, curr_key;
@@ -1464,20 +1522,9 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
                 const ParsedResult* b_pr = curr_key.empty() ? nullptr : &current_map.at(curr_key);
 
                 f << "### " << fk.display << "\n\n";
-                f << "| Metric | Unit | " << name_a << " | " << name_b
-                  << " | B/A Ratio |\n";
-                f << "|:---|:---|---:|---:|---:|\n";
 
-                // Build a sortable list: (band, name, glyph, a_m, b_m).
-                struct Row {
-                    int band;
-                    std::string name;
-                    const char* glyph;
-                    const FwMetric* a;
-                    const FwMetric* b;
-                };
-                std::vector<Row> rows;
-                rows.reserve(fw_metric_names[key].size());
+                // Bucket this scenario's metrics by direction.
+                std::vector<Row> higher, lower, descriptive;
                 for (const auto& nm : fw_metric_names[key]) {
                     const FwMetric* a_m = nullptr;
                     const FwMetric* b_m = nullptr;
@@ -1489,75 +1536,52 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
                         auto it = b_pr->framework_metrics.find(nm);
                         if (it != b_pr->framework_metrics.end()) b_m = &it->second;
                     }
-                    auto cls = classify(a_m ? a_m : b_m);
-                    rows.push_back({cls.first, nm, cls.second, a_m, b_m});
-                }
-                std::sort(rows.begin(), rows.end(),
-                          [](const Row& x, const Row& y) {
-                              if (x.band != y.band) return x.band < y.band;
-                              return x.name < y.name;
-                          });
-
-                std::vector<double> comparable;
-                int wins = 0, losses = 0;
-                for (const auto& row : rows) {
-                    std::string unit = row.a ? row.a->unit
-                                       : (row.b ? row.b->unit : std::string());
-                    double a_val = row.a ? row.a->value : 0.0;
-                    double b_val = row.b ? row.b->value : 0.0;
-
-                    f << "| `" << row.name << "` " << row.glyph
-                      << " | " << (unit.empty() ? "—" : unit) << " | ";
-                    if (row.a) f << std::fixed << std::setprecision(3) << a_val;
-                    else f << "—";
-                    f << " | ";
-                    if (row.b) f << std::fixed << std::setprecision(3) << b_val;
-                    else f << "—";
-                    f << " | ";
-
-                    if (row.band == 2) {
-                        f << "—";
-                    } else if (row.a && row.b && a_val > 0 && b_val > 0) {
-                        double ratio = (row.band == 0) ? (b_val / a_val)
-                                                       : (a_val / b_val);
-                        comparable.push_back(ratio);
-                        if (ratio > 1.0) {
-                            wins++;
-                            f << "**" << std::fixed << std::setprecision(2)
-                              << ratio << "x**";
-                        } else {
-                            if (ratio < 1.0) losses++;
-                            f << std::fixed << std::setprecision(2) << ratio
-                              << "x";
-                        }
-                    } else {
-                        f << "—";
-                    }
-                    f << " |\n";
+                    Row row{nm, a_m, b_m};
+                    int dir = classify(a_m ? a_m : b_m);
+                    if (dir == 0) higher.push_back(row);
+                    else if (dir == 1) lower.push_back(row);
+                    else descriptive.push_back(row);
                 }
 
-                if (!comparable.empty()) {
-                    double sum_log = 0.0;
-                    for (double x : comparable) sum_log += std::log(x);
-                    double geomean = std::exp(sum_log / comparable.size());
-                    int n = static_cast<int>(comparable.size());
-                    f << "\n_";
-                    if (geomean >= 1.0) {
-                        f << "**" << name_b << "** wins " << wins << "/" << n
-                          << " comparable metrics in this scenario; geomean **"
-                          << std::fixed << std::setprecision(2) << geomean
-                          << "x**.";
-                    } else {
-                        f << "**" << name_a << "** wins " << losses << "/" << n
-                          << " comparable metrics in this scenario; geomean "
-                          << std::fixed << std::setprecision(2) << geomean
-                          << "x (i.e. " << name_a << " is "
-                          << std::fixed << std::setprecision(2)
-                          << (1.0 / geomean) << "x better on average here).";
-                    }
-                    f << "_\n\n";
+                int total_wins = 0;
+                int total_comparable = 0;
+
+                if (!higher.empty()) {
+                    f << "#### ↑ Higher-is-better metrics\n\n";
+                    int w = 0, c = 0;
+                    write_table(f, higher, 0, w, c);
+                    total_wins += w;
+                    total_comparable += c;
+                    f << "\n_" << name_b << " wins " << w << "/" << c
+                      << " in this category (**bold** = " << name_b
+                      << " better, i.e. ratio > 1.00x)._\n\n";
+                }
+
+                if (!lower.empty()) {
+                    f << "#### ↓ Lower-is-better metrics\n\n";
+                    int w = 0, c = 0;
+                    write_table(f, lower, 1, w, c);
+                    total_wins += w;
+                    total_comparable += c;
+                    f << "\n_" << name_b << " wins " << w << "/" << c
+                      << " in this category (**bold** = " << name_b
+                      << " better, i.e. ratio < 1.00x because " << name_b
+                      << " is smaller / faster)._\n\n";
+                }
+
+                if (!descriptive.empty()) {
+                    f << "#### · Descriptive metrics\n\n";
+                    int w = 0, c = 0;
+                    write_table(f, descriptive, 2, w, c);
+                    f << "\n";
+                }
+
+                if (total_comparable > 0) {
+                    f << "_**Per-scenario summary:** " << name_b << " wins **"
+                      << total_wins << "/" << total_comparable
+                      << "** comparable metrics in this scenario._\n\n";
                 } else {
-                    f << "\n_No comparable metrics in this scenario._\n\n";
+                    f << "_No comparable metrics in this scenario._\n\n";
                 }
             }
         }

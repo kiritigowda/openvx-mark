@@ -35,7 +35,6 @@ Generates a markdown comparison table and CSV from two or more benchmark JSON re
 
 import argparse
 import json
-import math
 import os
 import sys
 
@@ -199,24 +198,27 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, reports, syst
 
         # --- Framework Metrics Comparison ---
         #
-        # Layout intent (uniform & intuitive):
-        #   * One H3 subsection per (benchmark, resolution) scenario, so 30+
-        #     mixed metrics aren't mashed into one flat table.
-        #   * Direction is conveyed by an inline glyph next to the metric
-        #     name (↑ higher-better, ↓ lower-better, · descriptive), so the
-        #     table doesn't need a separate Direction column whose value
-        #     repeats endlessly.
-        #   * The "B/A Ratio" column is ALWAYS oriented as "how many times
-        #     better B is than A" — for higher-better metrics that's B/A,
-        #     for lower-better that's A/B (inverted). This matches the
-        #     kernel-comparison Speedup convention: >1.00x always = B wins.
-        #   * Bold the ratio when B wins (>1.00x).
-        #   * Descriptive metrics (unit=='count') get no ratio — they're
-        #     structural, not performance signals. Just show raw values.
-        #   * Per-scenario footer line summarising win/loss + geomean.
+        # Layout intent (uniform & intuitive — designed to remove the
+        # per-row inversion that the previous design did):
         #
-        # Group framework metrics by (benchmark name, resolution); union
-        # across reports so a metric present on only one side still appears.
+        #   * One H3 subsection per (benchmark, resolution) scenario, so
+        #     30+ mixed metrics aren't mashed into one flat table.
+        #   * Within each scenario, metrics are split by direction into
+        #     up to three H4 sub-tables: ↑ higher-is-better, ↓ lower-
+        #     is-better, · descriptive. Each sub-table is internally
+        #     uniform — every row uses the SAME ratio formula and the
+        #     SAME "what counts as a win" rule.
+        #   * The ratio column is ALWAYS the literal raw `B/A`. No
+        #     per-row inversion magic. The H4 heading tells the reader
+        #     whether bigger or smaller is the winning direction in
+        #     that sub-table:
+        #       - ↑ table: bold when ratio > 1.00x (B is bigger = better)
+        #       - ↓ table: bold when ratio < 1.00x (B is smaller = better)
+        #     Bold cells visually mark winners regardless of direction.
+        #   * Descriptive metrics (unit=='count') get a stripped-down
+        #     no-ratio sub-table — they're structural, not performance.
+        #   * Per-scenario footer summarising total win count for B
+        #     across all comparable metrics.
         fw_keys = {}
         fw_metrics_by_key = {}
         per_side_metrics = [{}, {}]
@@ -236,94 +238,118 @@ def write_markdown(impl_names, result_maps, all_keys, output_path, reports, syst
                     fw_metrics_by_key[key].add(nm)
                     per_side_metrics[side][key][nm] = fm
 
-        def _classify(fm):
-            """Return (kind, glyph) where kind is 'higher', 'lower', or 'descriptive'."""
+        def _direction(fm):
+            """Return 'higher', 'lower', or 'descriptive' for a metric dict."""
             unit = (fm or {}).get('unit', '') or ''
             if unit == 'count':
-                return ('descriptive', '·')
-            return ('higher', '↑') if (fm or {}).get('higher_is_better', True) else ('lower', '↓')
+                return 'descriptive'
+            return 'higher' if (fm or {}).get('higher_is_better', True) else 'lower'
 
-        def _sort_key(nm, fm):
-            """Sort: higher-better first, then lower-better, then descriptive,
-            alphabetic within each band — so the headline speed metric of each
-            scenario floats to the top of its sub-table."""
-            kind, _ = _classify(fm)
-            band = {'higher': 0, 'lower': 1, 'descriptive': 2}[kind]
-            return (band, nm)
+        def _write_metric_table(f, rows, direction, name_a, name_b):
+            """Render one sub-table for a given direction band.
+
+            rows: list of (metric_name, a_fm, b_fm) tuples sorted alphabetically.
+            direction: 'higher', 'lower', or 'descriptive'.
+            Returns (wins_for_b, comparable_count) so the per-scenario
+            summary can aggregate across directions.
+            """
+            if direction == 'descriptive':
+                f.write(f'| Metric | Unit | {name_a} | {name_b} |\n')
+                f.write('|:---|:---|---:|---:|\n')
+            else:
+                f.write(f'| Metric | Unit | {name_a} | {name_b} | B/A Ratio |\n')
+                f.write('|:---|:---|---:|---:|---:|\n')
+
+            wins_b = 0
+            comparable = 0
+            for nm, a_fm, b_fm in rows:
+                unit = (a_fm or b_fm or {}).get('unit', '') or '—'
+                a_val = a_fm.get('value') if a_fm else None
+                b_val = b_fm.get('value') if b_fm else None
+                a_str = f'{a_val:.3f}' if a_val is not None else '—'
+                b_str = f'{b_val:.3f}' if b_val is not None else '—'
+
+                if direction == 'descriptive':
+                    f.write(f'| `{nm}` | {unit} | {a_str} | {b_str} |\n')
+                    continue
+
+                # Always literal B/A — no inversion ever.
+                if (a_val is not None and b_val is not None
+                        and a_val > 0 and b_val > 0):
+                    ratio = b_val / a_val
+                    comparable += 1
+                    b_wins = (ratio > 1.0) if direction == 'higher' else (ratio < 1.0)
+                    if b_wins:
+                        wins_b += 1
+                        ratio_cell = f'**{ratio:.2f}x**'
+                    else:
+                        ratio_cell = f'{ratio:.2f}x'
+                else:
+                    ratio_cell = '—'
+
+                f.write(f'| `{nm}` | {unit} | {a_str} | {b_str} | {ratio_cell} |\n')
+
+            return wins_b, comparable
 
         if fw_keys:
             f.write('## Framework Metrics Comparison\n\n')
             f.write(
                 '> Per-scenario framework metrics — graph orchestration, '
-                'scheduling, async streaming, verify cost. The **B/A Ratio** '
-                f'column always reads as "_how many times better {impl_names[1]} '
-                f'is than {impl_names[0]}_" — values >1.00x mean **{impl_names[1]} wins**, '
-                'regardless of whether the underlying metric is higher- or '
-                'lower-is-better.\n>\n'
-                f'>   * `↑` higher-is-better (throughput, speedup, fusion ratio) — Ratio = {impl_names[1]} / {impl_names[0]}\n'
-                f'>   * `↓` lower-is-better (latency, overhead in ms)            — Ratio = {impl_names[0]} / {impl_names[1]} (inverted so >1.00x still favours {impl_names[1]})\n'
-                '>   * `·` descriptive (counts, sizes)                           — structural, no ratio\n>\n'
-                f'> Bold ratios indicate **{impl_names[1]} wins** on that metric.\n\n'
+                'scheduling, async streaming, verify cost. Each scenario '
+                'is split into up to three sub-tables grouped by metric '
+                'direction so every row in a given table follows the same '
+                'rule:\n>\n'
+                f'>   * **↑ Higher-is-better** — throughput, speedup, fusion ratio. Ratio = {impl_names[1]} / {impl_names[0]}; **{impl_names[1]} wins when ratio > 1.00x**.\n'
+                f'>   * **↓ Lower-is-better** — latency, overhead in ms. Ratio = {impl_names[1]} / {impl_names[0]} (raw, no inversion); **{impl_names[1]} wins when ratio < 1.00x** because lower is better here.\n'
+                '>   * **· Descriptive** — counts and structural sizes; no ratio shown.\n>\n'
+                f'> **Bold** ratios mark cells where {impl_names[1]} wins, regardless of direction.\n\n'
             )
 
             for key in sorted(fw_keys.keys()):
                 display = fw_keys[key]
                 f.write(f'### {display}\n\n')
-                f.write(f'| Metric | Unit | {impl_names[0]} | {impl_names[1]} | B/A Ratio |\n')
-                f.write('|:---|:---|---:|---:|---:|\n')
 
-                # Decorate metrics with their kind/glyph for sort + render
-                rows = []
-                for nm in fw_metrics_by_key[key]:
+                # Bucket this scenario's metrics by direction.
+                buckets = {'higher': [], 'lower': [], 'descriptive': []}
+                for nm in sorted(fw_metrics_by_key[key]):
                     a_fm = per_side_metrics[0].get(key, {}).get(nm)
                     b_fm = per_side_metrics[1].get(key, {}).get(nm)
-                    kind, glyph = _classify(a_fm or b_fm)
-                    rows.append((nm, a_fm, b_fm, kind, glyph))
-                rows.sort(key=lambda t: _sort_key(t[0], t[1] or t[2]))
+                    buckets[_direction(a_fm or b_fm)].append((nm, a_fm, b_fm))
 
-                comparable_speedups = []
-                wins = 0
-                losses = 0
-                for nm, a_fm, b_fm, kind, glyph in rows:
-                    unit = (a_fm or b_fm or {}).get('unit', '') or '—'
-                    a_val = a_fm.get('value') if a_fm else None
-                    b_val = b_fm.get('value') if b_fm else None
-                    a_str = f'{a_val:.3f}' if a_val is not None else '—'
-                    b_str = f'{b_val:.3f}' if b_val is not None else '—'
+                total_wins = 0
+                total_comparable = 0
 
-                    if kind == 'descriptive':
-                        ratio_cell = '—'
-                    elif (a_val is not None and b_val is not None
-                          and a_val > 0 and b_val > 0):
-                        ratio = (b_val / a_val) if kind == 'higher' else (a_val / b_val)
-                        comparable_speedups.append(ratio)
-                        if ratio > 1.0:
-                            wins += 1
-                            ratio_cell = f'**{ratio:.2f}x**'
-                        elif ratio < 1.0:
-                            losses += 1
-                            ratio_cell = f'{ratio:.2f}x'
-                        else:
-                            ratio_cell = f'{ratio:.2f}x'
-                    else:
-                        ratio_cell = '—'
+                if buckets['higher']:
+                    f.write('#### ↑ Higher-is-better metrics\n\n')
+                    w, c = _write_metric_table(f, buckets['higher'], 'higher',
+                                               impl_names[0], impl_names[1])
+                    total_wins += w
+                    total_comparable += c
+                    f.write(f'\n_{impl_names[1]} wins {w}/{c} in this category '
+                            f'(**bold** = {impl_names[1]} better, i.e. ratio > 1.00x)._\n\n')
 
-                    f.write(f'| `{nm}` {glyph} | {unit} | {a_str} | {b_str} | {ratio_cell} |\n')
+                if buckets['lower']:
+                    f.write('#### ↓ Lower-is-better metrics\n\n')
+                    w, c = _write_metric_table(f, buckets['lower'], 'lower',
+                                               impl_names[0], impl_names[1])
+                    total_wins += w
+                    total_comparable += c
+                    f.write(f'\n_{impl_names[1]} wins {w}/{c} in this category '
+                            f'(**bold** = {impl_names[1]} better, i.e. ratio < 1.00x because '
+                            f'{impl_names[1]} is smaller / faster)._\n\n')
 
-                # Per-scenario footer line
-                if comparable_speedups:
-                    n = len(comparable_speedups)
-                    geomean = math.exp(sum(math.log(x) for x in comparable_speedups) / n)
-                    if geomean >= 1.0:
-                        verdict = (f'**{impl_names[1]}** wins {wins}/{n} comparable metrics in this '
-                                   f'scenario; geomean **{geomean:.2f}x**.')
-                    else:
-                        verdict = (f'**{impl_names[0]}** wins {losses}/{n} comparable metrics in this '
-                                   f'scenario; geomean {geomean:.2f}x (i.e. {impl_names[0]} is '
-                                   f'{1.0/geomean:.2f}x better on average here).')
-                    f.write(f'\n_{verdict}_\n\n')
+                if buckets['descriptive']:
+                    f.write('#### · Descriptive metrics\n\n')
+                    _write_metric_table(f, buckets['descriptive'], 'descriptive',
+                                        impl_names[0], impl_names[1])
+                    f.write('\n')
+
+                # Per-scenario summary line.
+                if total_comparable > 0:
+                    f.write(f'_**Per-scenario summary:** {impl_names[1]} wins '
+                            f'**{total_wins}/{total_comparable}** comparable metrics in this scenario._\n\n')
                 else:
-                    f.write('\n_No comparable metrics in this scenario._\n\n')
+                    f.write('_No comparable metrics in this scenario._\n\n')
 
         # --- Build comparison rows (include all results, not just verified) ---
         comparison_rows = []
