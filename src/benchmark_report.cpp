@@ -10,8 +10,8 @@
 #include <sys/stat.h>
 
 BenchmarkReport::BenchmarkReport(const SystemInfo& sys_info, const BenchmarkConfig& config,
-                                 const KernelRegistry& registry)
-    : sys_info_(sys_info), config_(config), registry_(registry) {}
+                                 const BenchmarkCatalog& catalog)
+    : sys_info_(sys_info), config_(config), catalog_(catalog) {}
 
 static void ensureDir(const std::string& path) {
     struct stat st = {};
@@ -217,7 +217,7 @@ std::vector<ScalingEntry> BenchmarkReport::computeScaling(const std::vector<Benc
 // ============================================================
 std::vector<ConformanceResult> BenchmarkReport::checkConformance(
         const std::vector<BenchmarkResult>& results,
-        const KernelRegistry& registry) {
+        const BenchmarkCatalog& catalog) {
     std::vector<ConformanceResult> conformance;
 
     // Collect all kernel names that produced valid graph-mode results, grouped by feature_set
@@ -230,9 +230,9 @@ std::vector<ConformanceResult> BenchmarkReport::checkConformance(
 
     // For each feature set, check which available kernels have benchmark results
     std::map<std::string, std::vector<std::string>> fs_available;
-    for (const auto& [e, info] : registry.allKernels()) {
-        if (info.available) {
-            fs_available[info.feature_set].push_back(info.name);
+    for (const auto& kentry : catalog.kernels) {
+        if (kentry.available) {
+            fs_available[kentry.feature_set].push_back(kentry.name);
         }
     }
 
@@ -333,7 +333,7 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
 
     // Feature set availability
     f << "  \"feature_set_availability\": {\n";
-    auto fs_summary = registry_.featureSetSummary();
+    const auto& fs_summary = catalog_.feature_sets;
     for (size_t i = 0; i < fs_summary.size(); i++) {
         const auto& s = fs_summary[i];
         f << "    \"" << jsonEscape(s.feature_set) << "\": {"
@@ -346,10 +346,10 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
     // Kernel availability
     f << "  \"kernel_availability\": {\n";
     bool first_k = true;
-    for (const auto& [e, info] : registry_.allKernels()) {
+    for (const auto& kentry : catalog_.kernels) {
         if (!first_k) f << ",\n";
         first_k = false;
-        f << "    \"" << jsonEscape(info.name) << "\": " << (info.available ? "true" : "false");
+        f << "    \"" << jsonEscape(kentry.name) << "\": " << (kentry.available ? "true" : "false");
     }
     f << "\n  },\n";
 
@@ -395,7 +395,7 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
     f << "  },\n";
 
     // Feature 7: Conformance
-    auto conformance = checkConformance(results, registry_);
+    auto conformance = checkConformance(results, catalog_);
     f << "  \"conformance\": [\n";
     for (size_t i = 0; i < conformance.size(); i++) {
         const auto& cr = conformance[i];
@@ -598,8 +598,8 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
       << (sys_info_.ram_bytes / (1024.0 * 1024.0 * 1024.0)) << " GB |\n";
     f << "| OpenVX Implementation | " << sys_info_.vx_implementation << " |\n";
     f << "| OpenVX Version | " << sys_info_.vx_version << " |\n";
-    f << "| Available Kernels | " << registry_.availableCount()
-      << " / " << registry_.totalCount() << " |\n";
+    f << "| Available Kernels | " << catalog_.available_count
+      << " / " << catalog_.total_count << " |\n";
     f << "| Benchmark Version | " << sys_info_.benchmark_version << " |\n";
     f << "| Git Commit | " << sys_info_.benchmark_git_commit << " |\n";
     f << "| Timestamp | " << sys_info_.timestamp_iso8601 << " |\n\n";
@@ -622,20 +622,18 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
 
     // Feature set availability
     f << "## Feature Set Availability\n\n";
-    auto fs_summary_md = registry_.featureSetSummary();
     f << "| Feature Set | Available | Total |\n";
     f << "|:---|---:|---:|\n";
-    for (const auto& s : fs_summary_md) {
+    for (const auto& s : catalog_.feature_sets) {
         f << "| " << s.feature_set << " | " << s.available << " | " << s.total << " |\n";
     }
     f << "\n";
 
     // Kernel availability summary
     f << "## Kernel Availability\n\n";
-    auto summary = registry_.categorySummary();
     f << "| Category | Available | Total |\n";
     f << "|:---|---:|---:|\n";
-    for (const auto& s : summary) {
+    for (const auto& s : catalog_.categories) {
         f << "| " << s.category << " | " << s.available << " | " << s.total << " |\n";
     }
     f << "\n";
@@ -689,7 +687,7 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
     }
 
     // Feature 7: Conformance Summary
-    auto conformance = checkConformance(results, registry_);
+    auto conformance = checkConformance(results, catalog_);
     f << "## Conformance Summary\n\n";
     f << "| Feature Set | Status | Passed | Total | Missing |\n";
     f << "|:---|:---|---:|---:|:---|\n";

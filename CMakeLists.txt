@@ -87,17 +87,43 @@ endif()
 message("-- OpenVX Include: ${OpenVX_INCLUDE_DIR}")
 message("-- OpenVX Libraries: ${OpenVX_LIBRARIES}")
 
-# Collect sources
-set(BENCHMARK_SOURCES
+# ----------------------------------------------------------------------------
+# bench_core — implementation-agnostic benchmark infrastructure
+#
+# Static library containing the bits of the benchmark framework that have
+# zero dependency on any specific vision backend (OpenVX, OpenCV, …):
+#   * BenchmarkResult / TimingStats / FrameworkMetric  (data structures)
+#   * BenchmarkStats                                    (median/percentile/CV%)
+#   * BenchmarkTimer                                    (wall-clock chrono timer)
+#   * BenchmarkReport                                   (JSON / CSV / Markdown writers + cross-vendor comparator)
+#   * SystemInfo                                        (CPU/OS/RAM detection)
+#
+# Linked by both the OpenVX `openvx-mark` binary and the OpenCV
+# `opencv-mark` companion binary (added in this PR), and by any future
+# `<other>-mark` companion. This keeps the JSON schema, comparison tool,
+# and stats math identical across all implementation backends so they
+# can be cross-compared via the same scripts/compare_reports.py and the
+# in-tool `--compare` flag.
+# ----------------------------------------------------------------------------
+add_library(bench_core STATIC
+    src/benchmark_stats.cpp
+    src/benchmark_timer.cpp
+    src/benchmark_report.cpp
+    src/system_info.cpp
+)
+target_include_directories(bench_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+set_target_properties(bench_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# OpenVX-flavoured benchmark sources (require <VX/vx.h>).
+set(OPENVX_MARK_SOURCES
     src/main.cpp
     src/benchmark_context.cpp
     src/benchmark_runner.cpp
-    src/benchmark_stats.cpp
-    src/benchmark_report.cpp
-    src/benchmark_timer.cpp
+    src/openvx_perf_query.cpp
     src/kernel_registry.cpp
     src/test_data_generator.cpp
-    src/system_info.cpp
     src/verify_utils.cpp
     src/benchmarks/node_pixelwise.cpp
     src/benchmarks/node_filters.cpp
@@ -115,13 +141,25 @@ set(BENCHMARK_SOURCES
     src/benchmarks/framework_benchmarks.cpp
 )
 
-add_executable(openvx-mark ${BENCHMARK_SOURCES})
+add_executable(openvx-mark ${OPENVX_MARK_SOURCES})
 target_include_directories(openvx-mark PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${OpenVX_INCLUDE_DIR}
 )
 target_compile_definitions(openvx-mark PRIVATE
     OPENVX_MARK_VERSION="${PROJECT_VERSION}"
     GIT_COMMIT_SHA="${GIT_COMMIT_SHA}"
 )
-target_link_libraries(openvx-mark ${OpenVX_LIBRARIES})
+target_link_libraries(openvx-mark PRIVATE bench_core ${OpenVX_LIBRARIES})
+
+# ----------------------------------------------------------------------------
+# opencv-mark — OpenCV baseline companion binary
+#
+# Built only when OpenCV is available. Skipped silently otherwise so a
+# bare openvx-only build environment is unaffected.
+#
+# Disable explicitly by configuring with -DOPENVX_MARK_BUILD_OPENCV=OFF.
+# ----------------------------------------------------------------------------
+option(OPENVX_MARK_BUILD_OPENCV "Build the opencv-mark companion binary if OpenCV is found" ON)
+if(OPENVX_MARK_BUILD_OPENCV)
+    add_subdirectory(opencv-mark)
+endif()

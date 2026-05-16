@@ -1,5 +1,6 @@
 #include "benchmark_runner.h"
 #include "benchmark_timer.h"
+#include "openvx_perf_query.h"
 #include <cstdio>
 #include <algorithm>
 
@@ -306,7 +307,7 @@ BenchmarkResult BenchmarkRunner::runGraphMode(const BenchmarkCase& bc, const Res
 
     // Query OpenVX perf
     vx_perf_t perf = {};
-    if (BenchmarkTimer::queryGraphPerf(graph, perf)) {
+    if (openvx_perf::queryGraphPerf(graph, perf)) {
         result.has_vx_perf = true;
         // Convert vx_perf_t to TimingStats (limited info)
         result.vx_perf.mean_ns = static_cast<double>(perf.avg);

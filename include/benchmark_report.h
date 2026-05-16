@@ -1,9 +1,9 @@
 #ifndef BENCHMARK_REPORT_H
 #define BENCHMARK_REPORT_H
 
+#include "benchmark_catalog.h"
 #include "benchmark_config.h"
 #include "benchmark_stats.h"
-#include "kernel_registry.h"
 #include "system_info.h"
 #include <map>
 #include <string>
@@ -53,8 +53,13 @@ struct ScalingEntry {
 
 class BenchmarkReport {
 public:
+    // The catalog is taken by value as a POD snapshot so the reporter
+    // is implementation-agnostic — both `openvx-mark` (vx_enum-probed
+    // kernel list) and `opencv-mark` (registered cv:: benchmark list)
+    // can produce a `BenchmarkCatalog` and feed the same reporter,
+    // guaranteeing identical JSON schema across implementations.
     BenchmarkReport(const SystemInfo& sys_info, const BenchmarkConfig& config,
-                    const KernelRegistry& registry);
+                    const BenchmarkCatalog& catalog);
 
     void generate(const std::vector<BenchmarkResult>& results);
 
@@ -67,7 +72,7 @@ public:
     static CompositeScores computeScores(const std::vector<BenchmarkResult>& results);
     static std::vector<ScalingEntry> computeScaling(const std::vector<BenchmarkResult>& results);
     static std::vector<ConformanceResult> checkConformance(const std::vector<BenchmarkResult>& results,
-                                                            const KernelRegistry& registry);
+                                                            const BenchmarkCatalog& catalog);
 
     // Cross-vendor comparison
     static void compareReports(const std::vector<std::string>& json_files,
@@ -76,7 +81,7 @@ public:
 private:
     SystemInfo sys_info_;
     BenchmarkConfig config_;
-    const KernelRegistry& registry_;
+    BenchmarkCatalog catalog_;
 };
 
 #endif // BENCHMARK_REPORT_H
