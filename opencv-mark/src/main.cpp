@@ -33,8 +33,9 @@ void printUsage(const char* prog) {
     printf("Linked against OpenCV %s\n\n", OPENCV_VERSION_STRING);
 
     printf("Benchmark Selection:\n");
-    printf("  --feature-set SET[,SET,...]   Currently only 'vision' is supported (PR1 scope)\n");
-    printf("  --category CAT[,CAT,...]      Filter by category (filters,color,geometric)\n");
+    printf("  --feature-set SET[,SET,...]   Currently only 'vision' is supported\n");
+    printf("  --category CAT[,CAT,...]      Filter by category (filters,color,geometric,\n");
+    printf("                                pixelwise,statistical,misc,multiscale,feature)\n");
     printf("  --kernel NAME[,NAME,...]      Filter by kernel name\n\n");
 
     printf("Resolution:\n");
@@ -251,6 +252,11 @@ int main(int argc, char* argv[]) {
     runner.addCases(opencv_mark::registerCvFilterBenchmarks());
     runner.addCases(opencv_mark::registerCvColorBenchmarks());
     runner.addCases(opencv_mark::registerCvGeometricBenchmarks());
+    runner.addCases(opencv_mark::registerCvPixelwiseBenchmarks());
+    runner.addCases(opencv_mark::registerCvStatisticalBenchmarks());
+    runner.addCases(opencv_mark::registerCvMiscBenchmarks());
+    runner.addCases(opencv_mark::registerCvMultiscaleBenchmarks());
+    runner.addCases(opencv_mark::registerCvFeatureBenchmarks());
 
     // Now we know how many kernels are registered; reflect that into
     // the SystemInfo so the JSON's `openvx.num_kernels` field carries

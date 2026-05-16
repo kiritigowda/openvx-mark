@@ -98,6 +98,11 @@ private:
 std::vector<OpenCVBenchmarkCase> registerCvFilterBenchmarks();
 std::vector<OpenCVBenchmarkCase> registerCvColorBenchmarks();
 std::vector<OpenCVBenchmarkCase> registerCvGeometricBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvPixelwiseBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvStatisticalBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvMiscBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvMultiscaleBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvFeatureBenchmarks();
 
 } // namespace opencv_mark
 
