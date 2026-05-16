@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — CI fairness, accuracy & timing audit
+
+A single PR that closes the headline credibility gap surfaced when
+adopting `opencv-mark` as the OpenCV baseline: "is OpenCV really
+that much faster than MIVisionX, or am I unintentionally measuring
+under-optimised MIVisionX code against optimised OpenCV?".
+
+- **Optimized MIVisionX/Khronos builds in CI.** MIVisionX's stock
+  `CMakeLists.txt` appends only `-msse4.2` to `CMAKE_CXX_FLAGS` —
+  the AGO HAF kernels use `_mm256_*` AVX2 intrinsics directly, but
+  the surrounding scalar code (dispatch, loop nests, address arith)
+  is compiled SSE4.2-only because nothing widens the compile
+  baseline. CI now passes `-DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG
+  -march=x86-64-v3"` so the auto-vec / FMA / BMI2 paths unlock too.
+  Same `CFLAGS`/`CXXFLAGS` upgrade applied to the Khronos sample's
+  Python build script for cross-impl compile-baseline parity.
+- **`--threads N` on both binaries** (default 1; 0 = leave impl's
+  own default). `opencv-mark` calls `cv::setNumThreads(N)`; both
+  binaries set `OMP_NUM_THREADS=N` for any OpenMP-using libs
+  downstream. CI's Phase-2 compare now passes `--threads 1`
+  explicitly so OpenCV doesn't get a silent `nproc`× boost from
+  TBB default settings while the OpenVX impls run single-threaded
+  per kernel.
+- **`--validate-timing` self-test.** Measures the monotonic clock
+  resolution and the timer's error against
+  `std::this_thread::sleep_for(1ms / 10ms / 100ms)`. Runs as a gate
+  at the top of every CI bench step — a borked runner clock fails
+  loud before its measurements get propagated into a comparison
+  report. Results land in JSON's new `timing_audit` block.
+- **Cross-impl output verification.** New `--dump-outputs DIR`
+  mode on both binaries dumps a curated sentinel set
+  (`Box3x3`, `Gaussian3x3`, `Median3x3`, `Erode3x3`, `Dilate3x3`,
+  `Sobel3x3`, `Add_U8_Saturate`, `Not_U8`, `ChannelExtract_R`)
+  to raw `.bin` files plus a `manifest.json`. New
+  `scripts/cross_verify_outputs.py` loads two such dumps, computes
+  per-kernel max-abs-diff + mean-abs-diff + PSNR (with border-ring
+  cropping for spatial filters where OpenVX `BORDER_UNDEFINED`
+  leaves the outermost pixels uninitialised by spec), and gates
+  on a per-kernel tolerance table. CI runs this against each
+  `(OpenCV, OpenVX impl)` pair after the benchmarks; the verdict
+  table appends to the existing Pairwise Comparison step summary.
+- **Build & threading provenance in JSON.** Two new top-level
+  blocks (`build`, `threading`) carry the benchmark-binary's
+  `CMAKE_BUILD_TYPE`, compiler ID/version, `CXXFLAGS`/`CXXFLAGS_RELEASE`,
+  `target_arch`, plus `requested_threads`, `opencv_threads`,
+  `openmp_max_threads`, and `OMP_NUM_THREADS` env. Lets a reader
+  audit at a glance whether a result was produced by an
+  optimised binary at the threading policy they care about.
+- **New artifact: `cross-verify-dumps`.** The raw sentinel `.bin`
+  dumps from each impl uploaded so reviewers can re-run the
+  verifier locally without rebuilding any binary.
+
 ## [1.0.0] — Framework Mark v1
 
 The first major openvx-mark release that benchmarks the OpenVX **graph framework** itself, not just individual kernels. Adds a new family of *framework benchmarks* — scenarios that exercise the OpenVX graph runtime (verification, virtual-image fusion, parallel scheduling, async dispatch, per-node attribution) and that **no per-kernel benchmark can surface** — alongside the existing 60-kernel suite, which is unchanged.

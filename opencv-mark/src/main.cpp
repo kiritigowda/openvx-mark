@@ -7,6 +7,7 @@
 // into scripts/compare_reports.py for cross-vendor comparison
 // alongside any OpenVX implementation report.
 
+#include "bench_runtime.h"
 #include "benchmark_catalog.h"
 #include "benchmark_config.h"
 #include "benchmark_report.h"
@@ -23,6 +24,11 @@
 #include <set>
 #include <string>
 #include <vector>
+
+namespace opencv_mark {
+// Implemented in src/cv_output_dumper.cpp.
+int runDumpMode(const std::string& dir, uint64_t seed);
+}  // namespace opencv_mark
 
 namespace {
 
@@ -58,6 +64,14 @@ void printUsage(const char* prog) {
     printf("  --compare F1,F2[,...]         Compare existing JSON reports — produces\n");
     printf("                                a comparison.md / .csv (uses the same shared\n");
     printf("                                BenchmarkReport::compareReports as openvx-mark)\n\n");
+
+    printf("Threading & accuracy:\n");
+    printf("  --threads N                   Threads for cv::setNumThreads (default: 1;\n");
+    printf("                                0 = leave OpenCV at its default (nproc))\n");
+    printf("  --validate-timing             Run timer self-test (sleep 1/10/100ms,\n");
+    printf("                                report clock resolution + error %%) and exit\n");
+    printf("  --dump-outputs DIR            Dump sentinel kernel outputs to DIR for\n");
+    printf("                                cross-impl verification (see scripts/cross_verify_outputs.py)\n\n");
 
     printf("Other:\n");
     printf("  --help                        Show this help\n");
@@ -156,6 +170,16 @@ bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.max_retries = atoi(argv[++i]);
         } else if (arg == "--compare" && i + 1 < argc) {
             config.compare_files = splitComma(argv[++i]);
+        } else if (arg == "--threads" && i + 1 < argc) {
+            config.threads = atoi(argv[++i]);
+            if (config.threads < 0) {
+                printf("ERROR: --threads must be >= 0 (got %d)\n", config.threads);
+                return false;
+            }
+        } else if (arg == "--validate-timing") {
+            config.validate_timing = true;
+        } else if (arg == "--dump-outputs" && i + 1 < argc) {
+            config.dump_outputs_dir = argv[++i];
         } else {
             printf("Unknown option: %s\n", arg.c_str());
             printUsage(argv[0]);
@@ -205,6 +229,27 @@ int main(int argc, char* argv[]) {
     BenchmarkConfig config;
     if (!parseArgs(argc, argv, config)) return 1;
 
+    // Threading policy applied early — cv::setNumThreads + OMP env so
+    // OpenCV's TBB / OpenMP pools settle before any kernel runs. Skip
+    // entirely when threads=0 (== "leave OpenCV's default in place").
+    {
+        SystemInfo _scratch;
+        bench_runtime::applyThreadingPolicy(config.threads, _scratch);
+        if (config.threads > 0) {
+            cv::setNumThreads(config.threads);
+        }
+    }
+
+    if (config.validate_timing) {
+        SystemInfo info = collectSystemInfo();
+        populateBuildInfo(info);
+        return bench_runtime::runTimerValidation(info);
+    }
+
+    if (!config.dump_outputs_dir.empty()) {
+        return opencv_mark::runDumpMode(config.dump_outputs_dir, config.seed);
+    }
+
     // Comparison mode delegates to the shared reporter so the output
     // is byte-identical to running the same comparison from
     // openvx-mark — proves the schema parity by construction.
@@ -234,6 +279,12 @@ int main(int argc, char* argv[]) {
     sys_info.vx_extensions     = cv_ctx.buildOptions();
     sys_info.benchmark_version = OPENCV_MARK_VERSION;
     sys_info.benchmark_git_commit = GIT_COMMIT_SHA;
+    // Build + threading provenance. cv::getNumThreads() is captured AFTER
+    // the early cv::setNumThreads(config.threads) call so the JSON shows
+    // the value the runner actually used.
+    populateBuildInfo(sys_info);
+    bench_runtime::applyThreadingPolicy(config.threads, sys_info);
+    sys_info.opencv_threads = cv::getNumThreads();
     printf("  Host: %s (%s %s)\n", sys_info.hostname.c_str(),
            sys_info.os_name.c_str(), sys_info.os_version.c_str());
     printf("  CPU:  %s (%d cores)\n\n", sys_info.cpu_model.c_str(), sys_info.cpu_cores);

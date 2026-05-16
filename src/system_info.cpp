@@ -1,5 +1,6 @@
 #include "system_info.h"
 #include <ctime>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -116,4 +117,57 @@ SystemInfo collectSystemInfo() {
 #endif
 
     return info;
+}
+
+// ----------------------------------------------------------------------------
+// populateBuildInfo
+//
+// Reads the compile-time macros injected by the parent CMakeLists.txt:
+//
+//   BENCH_BUILD_TYPE        — CMAKE_BUILD_TYPE                ("Release")
+//   BENCH_COMPILER_ID       — CMAKE_CXX_COMPILER_ID           ("GNU")
+//   BENCH_COMPILER_VERSION  — CMAKE_CXX_COMPILER_VERSION      ("11.4.0")
+//   BENCH_CXX_FLAGS         — CMAKE_CXX_FLAGS                 (project-wide)
+//   BENCH_CXX_FLAGS_RELEASE — CMAKE_CXX_FLAGS_RELEASE         (per-config)
+//   BENCH_TARGET_ARCH       — CMAKE_SYSTEM_PROCESSOR          ("x86_64")
+//
+// These are the build environment of the openvx-mark / opencv-mark binary
+// itself — the OpenVX implementation library's build flags are separate
+// runtime concerns and not visible here.
+//
+// $OMP_NUM_THREADS is read at startup so the JSON records what the user's
+// shell told the kernel libs to do, independent of any --threads CLI knob
+// (those two settings interact unpredictably across impls).
+// ----------------------------------------------------------------------------
+#ifndef BENCH_BUILD_TYPE
+#define BENCH_BUILD_TYPE "Unknown"
+#endif
+#ifndef BENCH_COMPILER_ID
+#define BENCH_COMPILER_ID "Unknown"
+#endif
+#ifndef BENCH_COMPILER_VERSION
+#define BENCH_COMPILER_VERSION "Unknown"
+#endif
+#ifndef BENCH_CXX_FLAGS
+#define BENCH_CXX_FLAGS ""
+#endif
+#ifndef BENCH_CXX_FLAGS_RELEASE
+#define BENCH_CXX_FLAGS_RELEASE ""
+#endif
+#ifndef BENCH_TARGET_ARCH
+#define BENCH_TARGET_ARCH "Unknown"
+#endif
+
+void populateBuildInfo(SystemInfo& info) {
+    info.build_type = BENCH_BUILD_TYPE;
+    info.compiler_id = BENCH_COMPILER_ID;
+    info.compiler_version = BENCH_COMPILER_VERSION;
+    info.cxx_flags = BENCH_CXX_FLAGS;
+    info.cxx_flags_release = BENCH_CXX_FLAGS_RELEASE;
+    info.target_arch = BENCH_TARGET_ARCH;
+
+    const char* env_omp = std::getenv("OMP_NUM_THREADS");
+    if (env_omp != nullptr) {
+        info.omp_num_threads_env = env_omp;
+    }
 }

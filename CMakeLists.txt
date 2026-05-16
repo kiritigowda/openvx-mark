@@ -110,11 +110,47 @@ add_library(bench_core STATIC
     src/benchmark_timer.cpp
     src/benchmark_report.cpp
     src/system_info.cpp
+    src/bench_runtime.cpp
 )
 target_include_directories(bench_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 set_target_properties(bench_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# bench_runtime uses dlsym(RTLD_DEFAULT, "omp_get_max_threads") to detect
+# whether the final binary (or any DSO it loaded) brought OpenMP in.
+# Weak-linking via dlsym keeps bench_core itself OpenMP-free.
+if(UNIX AND NOT APPLE)
+    target_link_libraries(bench_core PUBLIC dl pthread)
+elseif(APPLE)
+    target_link_libraries(bench_core PUBLIC pthread)
+endif()
+
+# ----------------------------------------------------------------------------
+# Build-info defines — captured at configure time and baked into bench_core
+# (which is linked by every <impl>-mark binary). populateBuildInfo() in
+# src/system_info.cpp reads these via #ifdef and writes them into the JSON
+# `build` block, so a reader can tell at a glance whether a result was
+# produced by a Release build, what -march was active, etc. Critical for
+# cross-impl comparison fairness — see PR umbrella "build-time provenance"
+# motivation.
+#
+# We resolve CMAKE_BUILD_TYPE to "Release" when the user didn't set it
+# (matches CMake's own default for `cmake --build` invocations), so the
+# JSON never carries an empty string.
+# ----------------------------------------------------------------------------
+if(NOT CMAKE_BUILD_TYPE)
+    set(_BENCH_BUILD_TYPE_RESOLVED "Release")
+else()
+    set(_BENCH_BUILD_TYPE_RESOLVED ${CMAKE_BUILD_TYPE})
+endif()
+target_compile_definitions(bench_core PUBLIC
+    BENCH_BUILD_TYPE="${_BENCH_BUILD_TYPE_RESOLVED}"
+    BENCH_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
+    BENCH_COMPILER_VERSION="${CMAKE_CXX_COMPILER_VERSION}"
+    BENCH_CXX_FLAGS="${CMAKE_CXX_FLAGS}"
+    BENCH_CXX_FLAGS_RELEASE="${CMAKE_CXX_FLAGS_RELEASE}"
+    BENCH_TARGET_ARCH="${CMAKE_SYSTEM_PROCESSOR}"
+)
 
 # OpenVX-flavoured benchmark sources (require <VX/vx.h>).
 set(OPENVX_MARK_SOURCES
@@ -139,6 +175,7 @@ set(OPENVX_MARK_SOURCES
     src/benchmarks/pipeline_vision.cpp
     src/benchmarks/pipeline_feature.cpp
     src/benchmarks/framework_benchmarks.cpp
+    src/openvx_output_dumper.cpp
 )
 
 add_executable(openvx-mark ${OPENVX_MARK_SOURCES})
