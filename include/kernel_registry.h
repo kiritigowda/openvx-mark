@@ -1,6 +1,7 @@
 #ifndef KERNEL_REGISTRY_H
 #define KERNEL_REGISTRY_H
 
+#include "benchmark_catalog.h"
 #include <VX/vx.h>
 #include <cstdint>
 #include <map>
@@ -44,6 +45,11 @@ public:
         int total;
     };
     std::vector<FeatureSetSummary> featureSetSummary() const;
+
+    // Build an implementation-agnostic catalog snapshot for the
+    // shared `bench_core` reporter (JSON / Markdown / cross-vendor
+    // comparison). See benchmark_catalog.h for the rationale.
+    BenchmarkCatalog snapshot() const;
 
 private:
     void registerKernel(vx_enum e, const std::string& name,

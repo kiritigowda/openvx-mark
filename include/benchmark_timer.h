@@ -1,7 +1,15 @@
 #ifndef BENCHMARK_TIMER_H
 #define BENCHMARK_TIMER_H
 
-#include <VX/vx.h>
+// Pure C++ wall-clock timer — no implementation-specific dependencies.
+// Lives in the shared `bench_core` static library so both openvx-mark
+// and opencv-mark (and any future implementation-mark companion binary)
+// can use the same timing primitive without dragging in OpenVX.
+//
+// OpenVX-specific performance queries (vxQueryGraph / vxQueryNode with
+// VX_*_PERFORMANCE) live in include/openvx_perf_query.h, owned solely
+// by openvx-mark.
+
 #include <chrono>
 #include <cstdint>
 
@@ -11,11 +19,6 @@ public:
     void stop();
     double elapsed_ns() const;
     double elapsed_ms() const;
-
-    // Query OpenVX performance from a graph
-    static bool queryGraphPerf(vx_graph graph, vx_perf_t& perf);
-    // Query OpenVX performance from a node
-    static bool queryNodePerf(vx_node node, vx_perf_t& perf);
 
 private:
     std::chrono::high_resolution_clock::time_point start_time_;
