@@ -636,154 +636,118 @@ jobs:
       # ----- Pairwise comparisons -----
       #
       # Each comparison is oriented as "<candidate> over <baseline>" so
-      # the Speedup column reads as `candidate / baseline` (>1.00x =
-      # candidate is faster). The orientation is deliberate: we want
-      # MIVisionX-vs-* and rustVX-vs-Khronos to read as "how much faster
-      # is the more-tuned implementation than the reference", giving an
-      # at-a-glance headline number that grows when the candidate wins:
+      # the speedup column reads as `candidate / baseline` (>1.00x =
+      # candidate is faster). The orientation is deliberate:
       #
-      #   * MIVisionX over Khronos sample   (AMD over reference)
-      #   * MIVisionX over rustVX           (AMD over Rust impl)
-      #   * rustVX     over Khronos sample  (Rust impl over reference)
+      #   OpenVX-vs-OpenVX trio — "how much faster is the more-tuned
+      #   impl than the reference":
+      #     * MIVisionX over Khronos sample   (AMD over reference)
+      #     * MIVisionX over rustVX           (AMD over Rust impl)
+      #     * rustVX     over Khronos sample  (Rust impl over reference)
       #
-      # Mechanically, `compare_reports.py` computes
+      #   OpenVX-vs-OpenCV trio — "does adopting OpenVX pay off vs cv::":
+      #     * MIVisionX over OpenCV
+      #     * Khronos sample over OpenCV
+      #     * rustVX over OpenCV
+      #
+      # Mechanically, `scripts/compare_reports.py` computes
       #     speedup = throughput(arg2) / throughput(arg1)
       # so the candidate is passed as the SECOND positional arg.
+      #
+      # The step does two things:
+      #   1. Runs `compare_reports.py` once per pair to produce a
+      #      per-kernel detail .md in comparisons/. These also become
+      #      the `benchmark-comparisons` artifact for downstream tools.
+      #   2. Invokes `scripts/ci_pairwise_summary.py` once to render
+      #      an organized GitHub Step Summary — TL;DR speedup matrix
+      #      at top, two grouped headline tables, and the per-kernel
+      #      detail tables collapsed inside <details> blocks. See the
+      #      script docstring for the config schema; this used to be a
+      #      ~115-line bash + inline-Python block and rendered ~600
+      #      lines into the summary.
       - name: Pairwise comparisons
         if: always()
         run: |
           set -euo pipefail
           mkdir -p comparisons
 
-          M="build-mivisionx/results/benchmark_results.json"
-          K="build-khronos/results/benchmark_results.json"
-          R="build-rustvx/results/benchmark_results.json"
-          O="build-opencv-bench/results/benchmark_results.json"
+          # Per-impl JSON report paths (parallel arrays keyed by impl id).
+          IDS=(mivisionx khronos rustvx opencv)
+          PATHS=(
+            "build-mivisionx/results/benchmark_results.json"
+            "build-khronos/results/benchmark_results.json"
+            "build-rustvx/results/benchmark_results.json"
+            "build-opencv-bench/results/benchmark_results.json"
+          )
+          LABELS=(
+            "MIVisionX (AMD OpenVX)"
+            "Khronos sample"
+            "rustVX"
+            "OpenCV"
+          )
 
-          do_compare() {
-            local candidate="$1" baseline="$2"
-            local path_candidate="$3" path_baseline="$4"
-            local cand_label="$5" base_label="$6"
-            local out="comparisons/${candidate}-over-${baseline}"
+          # The 6 pairs, "<candidate> <baseline>". Order matches the
+          # rendered summary table order: OpenVX-vs-OpenCV (headline
+          # question) first, then OpenVX-vs-OpenVX.
+          PAIRS=(
+            "mivisionx opencv"
+            "khronos   opencv"
+            "rustvx    opencv"
+            "mivisionx khronos"
+            "mivisionx rustvx"
+            "rustvx    khronos"
+          )
 
-            {
-              echo "## ${cand_label} over ${base_label}"
-              echo ""
-            } >> "$GITHUB_STEP_SUMMARY"
-
-            if [ ! -f "$path_candidate" ] || [ ! -f "$path_baseline" ]; then
-              {
-                echo "_Skipped: one or both reports missing (${cand_label}: $([ -f "$path_candidate" ] && echo OK || echo MISSING), ${base_label}: $([ -f "$path_baseline" ] && echo OK || echo MISSING))_"
-                echo ""
-                echo "---"
-                echo ""
-              } >> "$GITHUB_STEP_SUMMARY"
-              return 0
-            fi
-
-            # Headline geomean — adapted from the perf-gate Python block
-            # in rustVX's conformance CI. Keys benchmarks by
-            # (name, mode, resolution), filters to verified-on-both
-            # entries with positive throughput, then computes geomean,
-            # median, win/loss counts, and best/worst kernels.
-            python3 - "$path_candidate" "$path_baseline" "$cand_label" "$base_label" \
-              >> "$GITHUB_STEP_SUMMARY" <<'PY'
-          import json, math, sys
-
-          cand_path, base_path = sys.argv[1], sys.argv[2]
-          cand_label, base_label = sys.argv[3], sys.argv[4]
-          with open(cand_path) as f: cand = json.load(f)
-          with open(base_path) as f: base = json.load(f)
-
-          def by_key(report):
-              return {(r['name'], r['mode'], r['resolution']): r
-                      for r in report.get('results', [])}
-
-          c = by_key(cand)
-          b = by_key(base)
-          shared = sorted(set(c) & set(b))
-
-          speedups = []
-          wins, losses = 0, 0
-          best = (None, 0.0)
-          worst = (None, math.inf)
-
-          for key in shared:
-              rc, rb = c[key], b[key]
-              if not (rc.get('verified', True) and rb.get('verified', True)):
-                  continue
-              mc = rc.get('megapixels_per_sec', 0)
-              mb = rb.get('megapixels_per_sec', 0)
-              if mc <= 0 or mb <= 0:
-                  continue
-              s = mc / mb  # >1 means candidate is faster
-              speedups.append(s)
-              if s > 1.0: wins += 1
-              elif s < 1.0: losses += 1
-              if s > best[1]:  best  = (key, s)
-              if s < worst[1]: worst = (key, s)
-
-          if not speedups:
-              print(f'_No verified benchmarks were directly comparable between {cand_label} and {base_label}._')
-              print()
-          else:
-              geomean = math.exp(sum(math.log(s) for s in speedups) / len(speedups))
-              median  = sorted(speedups)[len(speedups) // 2]
-              print('| Metric | Value |')
-              print('|:---|---:|')
-              print(f'| Geomean speedup ({cand_label} / {base_label}) | **{geomean:.2f}x** |')
-              print(f'| Median speedup ({cand_label} / {base_label})  | {median:.2f}x |')
-              print(f'| Benchmarks compared                              | {len(speedups)} |')
-              print(f'| {cand_label} faster                              | {wins} |')
-              print(f'| {base_label} faster                              | {losses} |')
-              if best[0]:
-                  bk, bv = best
-                  print(f'| Best  {cand_label} speedup                      | {bv:.2f}x ({bk[0]} / {bk[1]} / {bk[2]}) |')
-              if worst[0] and worst[1] != math.inf:
-                  wk, wv = worst
-                  print(f'| Worst {cand_label} speedup                      | {wv:.2f}x ({wk[0]} / {wk[1]} / {wk[2]}) |')
-              print()
-              if geomean >= 1.0:
-                  print(f'> **{cand_label}** is **{geomean:.2f}x** faster than **{base_label}** on average (geomean across {len(speedups)} verified benchmarks).')
-              else:
-                  print(f'> **{cand_label}** is **{1.0/geomean:.2f}x slower** than **{base_label}** on average (geomean across {len(speedups)} verified benchmarks).')
-              print()
-          PY
-
-            # Detailed per-kernel comparison from compare_reports.py.
-            # Pass baseline first so the Speedup column reads as
-            # "candidate / baseline" — same orientation as the headline.
-            python3 scripts/compare_reports.py "$path_baseline" "$path_candidate" --output "$out"
-            {
-              echo "_Detailed per-kernel comparison — Speedup column reads as **${cand_label} / ${base_label}** (>1.00x = ${cand_label} faster)._"
-              echo ""
-              cat "${out}.md"
-              echo ""
-              echo "---"
-              echo ""
-            } >> "$GITHUB_STEP_SUMMARY"
+          # Phase 1 — per-kernel detail .md per pair where both inputs
+          # exist. Missing-input pairs are silently skipped here; the
+          # summary script renders a friendly "_Detail missing_" note
+          # for them inside the collapsed <details> block.
+          path_of() {
+            for i in "${!IDS[@]}"; do
+              if [ "${IDS[$i]}" = "$1" ]; then echo "${PATHS[$i]}"; return; fi
+            done
           }
+          for pair in "${PAIRS[@]}"; do
+            read -r CAND BASE <<< "$pair"
+            CAND_PATH=$(path_of "$CAND")
+            BASE_PATH=$(path_of "$BASE")
+            OUT="comparisons/${CAND}-over-${BASE}"
+            if [ -f "$CAND_PATH" ] && [ -f "$BASE_PATH" ]; then
+              python3 scripts/compare_reports.py "$BASE_PATH" "$CAND_PATH" --output "$OUT"
+            else
+              echo "Skipping detail for ${CAND}-over-${BASE}: missing ${CAND_PATH} or ${BASE_PATH}"
+            fi
+          done
 
-          # OpenVX-vs-OpenVX trio (existing): MIVisionX (AMD) over both
-          # reference impls, then rustVX over Khronos sample (the
-          # slowest of the three).
-          do_compare mivisionx khronos "$M" "$K" "MIVisionX (AMD OpenVX)" "Khronos sample"
-          do_compare mivisionx rustvx  "$M" "$R" "MIVisionX (AMD OpenVX)" "rustVX"
-          do_compare rustvx    khronos "$R" "$K" "rustVX"                 "Khronos sample"
-
-          # OpenVX-vs-OpenCV trio (new in this PR). OpenCV is the
-          # baseline so the speedup column reads as `<OpenVX impl> /
-          # OpenCV` — values >1.00x mean adopting that OpenVX impl pays
-          # off vs writing the equivalent in cv:: directly. This is the
-          # headline question opencv-mark exists to answer.
-          #
-          # Ordered MIVisionX → Khronos → rustVX so the table walks
-          # from the most-tuned OpenVX impl (best case for OpenVX) to
-          # the reference (worst case) — readers see the realistic
-          # range of the OpenVX-vs-OpenCV trade-off.
-          do_compare mivisionx opencv "$M" "$O" "MIVisionX (AMD OpenVX)" "OpenCV"
-          do_compare khronos   opencv "$K" "$O" "Khronos sample"         "OpenCV"
-          do_compare rustvx    opencv "$R" "$O" "rustVX"                 "OpenCV"
+          # Phase 2 — render the organized step summary. The config
+          # below is the only place pair-grouping & intent text lives;
+          # the helper handles matrix rendering, headline tables, and
+          # the collapsed <details> blocks.
+          cat > /tmp/pairwise-config.json <<'JSON'
+          {
+            "reports": {
+              "mivisionx": {"label": "MIVisionX (AMD OpenVX)", "path": "build-mivisionx/results/benchmark_results.json"},
+              "khronos":   {"label": "Khronos sample",         "path": "build-khronos/results/benchmark_results.json"},
+              "rustvx":    {"label": "rustVX",                 "path": "build-rustvx/results/benchmark_results.json"},
+              "opencv":    {"label": "OpenCV",                 "path": "build-opencv-bench/results/benchmark_results.json"}
+            },
+            "groups": [
+              {
+                "title":  "OpenVX-vs-OpenCV — does adopting OpenVX pay off vs cv::?",
+                "intent": "Speedup reads as `<OpenVX impl> / OpenCV`. Values >1.00x mean adopting that OpenVX impl pays off vs writing the equivalent directly in OpenCV — the headline question this comparison phase exists to answer. Ordered most-tuned (MIVisionX) → reference (Khronos sample) → Rust impl (rustVX) so the table walks the realistic best→worst range of the trade-off.",
+                "pairs":  [["mivisionx", "opencv"], ["khronos", "opencv"], ["rustvx", "opencv"]]
+              },
+              {
+                "title":  "OpenVX-vs-OpenVX — cross-implementation",
+                "intent": "Speedup reads as `<candidate> / <baseline>`. MIVisionX (AMD, most-tuned) compared against both reference impls, then rustVX vs Khronos sample (Rust impl over reference).",
+                "pairs":  [["mivisionx", "khronos"], ["mivisionx", "rustvx"], ["rustvx", "khronos"]]
+              }
+            ],
+            "detail_dir": "comparisons"
+          }
+          JSON
+          python3 scripts/ci_pairwise_summary.py --config /tmp/pairwise-config.json \
+            >> "$GITHUB_STEP_SUMMARY"
 
           echo "--- comparison artifacts ---"
           ls -la comparisons/ || true
