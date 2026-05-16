@@ -315,6 +315,43 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
     f << "    \"git_commit\": \"" << jsonEscape(sys_info_.benchmark_git_commit) << "\"\n";
     f << "  },\n";
 
+    // Build provenance of the benchmark binary itself — lets a reader
+    // tell at a glance whether the result came from a Release / Debug
+    // build and which -march/-mfma the surrounding scalar code used.
+    // Critical for cross-impl fairness when the underlying OpenVX impls
+    // are built from-source with different CMake flags.
+    f << "  \"build\": {\n";
+    f << "    \"build_type\": \"" << jsonEscape(sys_info_.build_type) << "\",\n";
+    f << "    \"compiler_id\": \"" << jsonEscape(sys_info_.compiler_id) << "\",\n";
+    f << "    \"compiler_version\": \"" << jsonEscape(sys_info_.compiler_version) << "\",\n";
+    f << "    \"target_arch\": \"" << jsonEscape(sys_info_.target_arch) << "\",\n";
+    f << "    \"cxx_flags\": \"" << jsonEscape(sys_info_.cxx_flags) << "\",\n";
+    f << "    \"cxx_flags_release\": \"" << jsonEscape(sys_info_.cxx_flags_release) << "\"\n";
+    f << "  },\n";
+
+    // Threading policy snapshot. requested=0 means "left at impl default"
+    // (each impl chose for itself — typically single-thread for the
+    // OpenVX impls, nproc for OpenCV).
+    f << "  \"threading\": {\n";
+    f << "    \"requested_threads\": " << sys_info_.requested_threads << ",\n";
+    f << "    \"opencv_threads\": " << sys_info_.opencv_threads << ",\n";
+    f << "    \"openmp_max_threads\": " << sys_info_.openmp_max_threads << ",\n";
+    f << "    \"omp_num_threads_env\": \"" << jsonEscape(sys_info_.omp_num_threads_env) << "\"\n";
+    f << "  },\n";
+
+    // Timer self-test results — populated only when --validate-timing
+    // is run. The fields are always emitted (zero when unrun) so the
+    // schema stays stable and downstream parsers don't need to test
+    // for key presence.
+    f << "  \"timing_audit\": {\n";
+    f << "    \"validated\": " << (sys_info_.timing_validated ? "true" : "false") << ",\n";
+    f << "    \"clock_resolution_ns\": " << std::fixed << std::setprecision(2)
+      << sys_info_.timer_resolution_ns << ",\n";
+    f << "    \"sleep_1ms_err_pct\": " << sys_info_.timer_sleep_1ms_err_pct << ",\n";
+    f << "    \"sleep_10ms_err_pct\": " << sys_info_.timer_sleep_10ms_err_pct << ",\n";
+    f << "    \"sleep_100ms_err_pct\": " << sys_info_.timer_sleep_100ms_err_pct << "\n";
+    f << "  },\n";
+
     // Config
     f << "  \"config\": {\n";
     f << "    \"iterations\": " << config_.iterations << ",\n";

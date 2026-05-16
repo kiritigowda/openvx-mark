@@ -76,7 +76,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake git python3
 
-      - name: Build MIVisionX (CPU backend)
+      # Why -DCMAKE_CXX_FLAGS_RELEASE override (the "optimized kernels" knob):
+      #
+      # MIVisionX's amd_openvx/openvx/ago/ago_haf_cpu_*.cpp files contain
+      # hand-written AVX2 intrinsics (_mm256_*) for the CPU-side "Hardware
+      # Acceleration Functions" — these are the OPTIMIZED kernel paths.
+      # However, MIVisionX's own top-level CMakeLists.txt appends ONLY
+      # `-msse4.2` to CMAKE_CXX_FLAGS, with no -mavx2/-mfma and no
+      # __attribute__((target("avx2"))) on any function. With just -msse4.2
+      # the compiler can still emit the AVX2 intrinsics in those specific
+      # call sites, but it CANNOT auto-vectorise the surrounding scalar /
+      # loop code beyond SSE4.2, can't use FMA, can't use BMI/BMI2 — so
+      # the per-kernel dispatch glue, address arithmetic, and any kernel
+      # code that's not hand-vectorised stays at SSE4.2 throughput. That's
+      # the "base kernel" path the umbrella PR description points at.
+      #
+      # By overriding CMAKE_CXX_FLAGS_RELEASE we get -O3 -DNDEBUG plus
+      # x86-64-v3 (= SSE4.2 + AVX + AVX2 + BMI + BMI2 + FMA + LZCNT + POPCNT),
+      # which is the conservative-portable AMD64 baseline modern compilers
+      # ship for since gcc 11. GitHub Actions Ubuntu 22.04 runners use Intel
+      # Xeon or AMD EPYC CPUs which all support x86-64-v3.
+      #
+      # MIVisionX still appends `-msse4.2` to CMAKE_CXX_FLAGS (we don't
+      # override CMAKE_CXX_FLAGS, only the per-config Release variant),
+      # so the final compile line is "-O3 -DNDEBUG -march=x86-64-v3
+      # -msse4.2". -march wins for code-gen ceiling; the dup -msse4.2 is
+      # redundant but harmless.
+      - name: Build MIVisionX (CPU backend, optimized)
         run: |
           set -euo pipefail
           git clone --depth 1 --branch develop \
@@ -88,10 +114,17 @@ jobs:
             -DNEURAL_NET=OFF \
             -DLOOM=OFF \
             -DMIGRAPHX=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -march=x86-64-v3" \
             -DCMAKE_INSTALL_PREFIX=/tmp/mivisionx-install \
             ..
           make -j$(nproc)
           make install
+          # Sanity-print the actual compile flags the make rules used —
+          # surfaces in CI logs so a reviewer can confirm AVX2 made it
+          # into the build (look for `-march=x86-64-v3` in the cmake echo).
+          grep -h 'CXX_FLAGS' CMakeFiles/openvx.dir/flags.make 2>/dev/null \
+            | head -2 || true
 
       - name: Stage MIVisionX artifact
         id: stage
@@ -136,7 +169,7 @@ jobs:
       # since openvx-mark only writes its JSON at end-of-run a mid-bench
       # crash takes out the entire signal. Re-enable per-impl gating
       # later when those impl quirks are sorted upstream.
-      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters, single-threaded)
         # Smoke is advisory — if a specific impl crashes inside a
         # specific kernel the artifact upload (which the compare job
         # depends on) must still happen so vendor-vs-vendor signal
@@ -146,8 +179,14 @@ jobs:
           set -eo pipefail
           cd build-smoke
           export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
+          # Timer self-test up front so a sloppy runner clock fails
+          # loud before we trust a smoke timing number.
+          ./openvx-mark --validate-timing
+          # `--threads 1` matches the Phase 2 compare config — same
+          # apples-to-apples threading policy on smoke and full bench
+          # so smoke timings are interpretable as a coarse preview.
           ./openvx-mark --feature-set vision,framework \
-            --resolution VGA --iterations 5 --warmup 1 \
+            --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
 
       - name: Upload MIVisionX artifact
@@ -181,12 +220,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake git python3
 
-      - name: Build Khronos OpenVX sample
+      # Khronos sample is a reference impl (no SIMD intrinsics), so
+      # most of the perf budget rides on whatever compiler auto-vec the
+      # build picks up. Build.py honours CFLAGS / CXXFLAGS from the
+      # environment, so we use those to upgrade the compile baseline
+      # to x86-64-v3 (= AVX2 + FMA + BMI2 + LZCNT + POPCNT), matching
+      # what the MIVisionX build above gets. No fairness claim that
+      # the sample becomes "competitive" — it's a reference — just
+      # that it's being measured at the SAME compile baseline as
+      # MIVisionX so the cross-impl comparison isn't contaminated by
+      # one side getting better auto-vec than the other.
+      - name: Build Khronos OpenVX sample (Release, x86-64-v3)
         run: |
           set -euo pipefail
           git clone --recursive --depth 1 \
             https://github.com/KhronosGroup/OpenVX-sample-impl.git /tmp/khronos-src
           cd /tmp/khronos-src
+          export CFLAGS="-O3 -march=x86-64-v3 ${CFLAGS:-}"
+          export CXXFLAGS="-O3 -march=x86-64-v3 ${CXXFLAGS:-}"
+          echo "CFLAGS  = ${CFLAGS}"
+          echo "CXXFLAGS= ${CXXFLAGS}"
           python3 Build.py --os=Linux --arch=64 --conf=Release
 
       - name: Stage Khronos sample artifact
@@ -224,14 +277,15 @@ jobs:
 
       # Smoke is restricted to the `vision` + `framework` subset for
       # the same reason as the MIVisionX smoke — see comment there.
-      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters, single-threaded)
         continue-on-error: true
         run: |
           set -eo pipefail
           cd build-smoke
           export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --validate-timing
           ./openvx-mark --feature-set vision,framework \
-            --resolution VGA --iterations 5 --warmup 1 \
+            --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
 
       - name: Upload Khronos sample artifact
@@ -354,14 +408,15 @@ jobs:
 
       # Smoke is restricted to the `vision` + `framework` subset for
       # the same reason as the MIVisionX smoke — see comment there.
-      - name: Run smoke benchmark (vision + framework, VGA × 5 iters)
+      - name: Run smoke benchmark (vision + framework, VGA × 5 iters, single-threaded)
         continue-on-error: true
         run: |
           set -eo pipefail
           cd build-smoke
           export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --validate-timing
           ./openvx-mark --feature-set vision,framework \
-            --resolution VGA --iterations 5 --warmup 1 \
+            --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
 
       - name: Upload rustVX artifact
@@ -443,12 +498,21 @@ jobs:
       # stays comparable. Not continue-on-error — opencv-mark has no
       # impl-side quirks to tolerate; if a kernel breaks here it's our
       # bug.
-      - name: Run smoke benchmark (vision, VGA × 5 iters)
+      - name: Run smoke benchmark (vision, VGA × 5 iters, single-threaded)
         run: |
           set -eo pipefail
           cd build-opencv
+          # Timer self-test up front — same gate that runs in the
+          # Phase 2 compare job. Catches a borked runner clock at
+          # smoke time so we don't waste a full FHD bench cycle.
+          ./opencv-mark/opencv-mark --validate-timing
+          # `--threads 1` for symmetry with the smokes that run
+          # against single-threaded OpenVX impls — keeps the smoke
+          # comparable in shape to the cross-impl ones, even though
+          # the smoke itself is just a "did it build & did it run?"
+          # check, not a perf claim.
           ./opencv-mark/opencv-mark --feature-set vision \
-            --resolution VGA --iterations 5 --warmup 1 \
+            --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
 
       - name: Upload opencv-mark smoke results
@@ -555,10 +619,25 @@ jobs:
       # independent and the comparison job downstream handles whichever
       # JSON files actually got produced.
       #
+      # `--threads 1` is passed EXPLICITLY (it's also the default — but
+      # we want the CI compare config to be self-documenting). Rationale:
+      #
+      #   * MIVisionX CPU backend, Khronos sample, and rustVX are all
+      #     fundamentally single-threaded per kernel — none of them have
+      #     an internal thread pool on the CPU path.
+      #   * OpenCV, by contrast, will happily spawn nproc threads via
+      #     TBB/OpenMP if left at its default. Without the `--threads 1`
+      #     pin, the OpenCV side would get an unfair (nproc)x parallelism
+      #     boost just from defaults — the comparison would no longer be
+      #     "OpenVX kernel vs OpenCV kernel" but "1-thread OpenVX vs
+      #     n-thread OpenCV". `--threads 1` calls cv::setNumThreads(1)
+      #     for opencv-mark and sets OMP_NUM_THREADS=1 in the env for
+      #     anything OpenMP-using downstream.
+      #
       # Feature set is `vision,framework` (the comparison-stable subset
       # — see the smoke step comments for why `enhanced_vision` is held
       # back for now).
-      - name: Build & bench against MIVisionX
+      - name: Build & bench against MIVisionX (single-threaded, FHD × 20)
         if: always() && steps.detect.outputs.mivisionx == 'true'
         run: |
           set -euo pipefail
@@ -571,11 +650,21 @@ jobs:
             ..
           cmake --build . -j$(nproc)
           export LD_LIBRARY_PATH=${{ github.workspace }}/impl/mivisionx/lib:${LD_LIBRARY_PATH:-}
+          # Timer self-test first — gates the rest of the bench. If the
+          # runner clock is sloppy, our timing numbers are meaningless
+          # and we'd rather know about it now than ship bad data.
+          ./openvx-mark --validate-timing
           ./openvx-mark --feature-set vision,framework \
-            --resolution FHD --iterations 20 --warmup 5 \
+            --resolution FHD --iterations 20 --warmup 5 --threads 1 \
             --output-dir results
+          # Sentinel-set dump for cross-impl numerical verification —
+          # see scripts/cross_verify_outputs.py. Runs the kernel set
+          # ONCE (no timing, no warmup) so it's cheap, then the
+          # downstream verify step compares this dump against the
+          # OpenCV dump for correctness.
+          ./openvx-mark --dump-outputs dump-mivisionx --seed 42
 
-      - name: Build & bench against Khronos sample
+      - name: Build & bench against Khronos sample (single-threaded, FHD × 20)
         if: always() && steps.detect.outputs.khronos == 'true'
         run: |
           set -euo pipefail
@@ -588,11 +677,13 @@ jobs:
             ..
           cmake --build . -j$(nproc)
           export LD_LIBRARY_PATH=${{ github.workspace }}/impl/khronos/lib:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --validate-timing
           ./openvx-mark --feature-set vision,framework \
-            --resolution FHD --iterations 20 --warmup 5 \
+            --resolution FHD --iterations 20 --warmup 5 --threads 1 \
             --output-dir results
+          ./openvx-mark --dump-outputs dump-khronos --seed 42 || true
 
-      - name: Build & bench against rustVX
+      - name: Build & bench against rustVX (single-threaded, FHD × 20)
         if: always() && steps.detect.outputs.rustvx == 'true'
         run: |
           set -euo pipefail
@@ -605,20 +696,22 @@ jobs:
             ..
           cmake --build . -j$(nproc)
           export LD_LIBRARY_PATH=${{ github.workspace }}/impl/rustvx/lib:${LD_LIBRARY_PATH:-}
+          ./openvx-mark --validate-timing
           ./openvx-mark --feature-set vision,framework \
-            --resolution FHD --iterations 20 --warmup 5 \
+            --resolution FHD --iterations 20 --warmup 5 --threads 1 \
             --output-dir results
+          ./openvx-mark --dump-outputs dump-rustvx --seed 42 || true
 
       # opencv-mark has no OpenVX dependency, so no OPENVX_* flags and no
       # detect-step gate — it only needs `libopencv-dev` (already installed
-      # above). Same FHD × 20 iter × 5 warmup shape as the OpenVX benches
-      # so per-kernel speedups are directly comparable. Feature-set is
-      # `vision` only — opencv-mark deliberately does not implement the
-      # `framework` set (OpenCV has no equivalent of the OpenVX graph
-      # framework concept), and `compare_reports.py` ignores
+      # above). Same FHD × 20 iter × 5 warmup × --threads 1 shape as the
+      # OpenVX benches so per-kernel speedups are directly comparable.
+      # Feature-set is `vision` only — opencv-mark deliberately does not
+      # implement the `framework` set (OpenCV has no equivalent of the
+      # OpenVX graph framework concept), and `compare_reports.py` ignores
       # not-on-both-sides kernels so the framework rows simply don't
       # appear in OpenCV pairwise reports.
-      - name: Build & bench opencv-mark
+      - name: Build & bench opencv-mark (single-threaded, FHD × 20)
         if: always()
         id: bench_opencv
         run: |
@@ -629,9 +722,80 @@ jobs:
           cmake --build . --target opencv-mark -j$(nproc)
           test -x opencv-mark/opencv-mark \
             || { echo "ERROR: opencv-mark not built — OpenCV detection failed in compare job"; exit 1; }
+          ./opencv-mark/opencv-mark --validate-timing
           ./opencv-mark/opencv-mark --feature-set vision \
-            --resolution FHD --iterations 20 --warmup 5 \
+            --resolution FHD --iterations 20 --warmup 5 --threads 1 \
             --output-dir results
+          ./opencv-mark/opencv-mark --dump-outputs dump-opencv --seed 42
+
+      # ----- Cross-impl numerical verification -----
+      #
+      # We have one dump-* directory per impl that produced a build.
+      # Run scripts/cross_verify_outputs.py for each (opencv, openvx)
+      # pair so a reviewer can see at a glance whether MIVisionX,
+      # Khronos sample, and rustVX agree with OpenCV at the pixel
+      # level — proves the timing comparison rows below are honest
+      # apples-to-apples and not "OpenCV is faster because it's
+      # silently computing the wrong thing".
+      #
+      # The verifier exits non-zero on any kernel exceeding its
+      # per-kernel tolerance; we collect all three reports into the
+      # step summary first, then fail the step at the end if any
+      # report failed. That way a single divergence on one impl
+      # doesn't hide the other two impls' results.
+      - name: Cross-impl output verification (OpenCV ↔ each OpenVX impl)
+        if: always()
+        run: |
+          set -euo pipefail
+          # numpy is the only Python dep — used by the verifier for
+          # array compare + PSNR. apt's python3-numpy on ubuntu-22.04
+          # is fine and avoids a pip wheel download.
+          sudo apt-get install -y python3-numpy
+          mkdir -p comparisons
+
+          OPENCV_DUMP=build-opencv-bench/dump-opencv
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Cross-impl numerical verification"
+            echo ""
+            echo "Sentinel kernel suite (VGA × 1 run, no timing) dumped by"
+            echo "\`--dump-outputs\` on each binary; \`scripts/cross_verify_outputs.py\`"
+            echo "loads both dumps and computes max-abs-diff + PSNR + exact-%"
+            echo "per kernel. Tolerances are tuned per kernel (see \`RULES\` in"
+            echo "the script). Numbers prove inputs are byte-identical (the"
+            echo "\`_input_u8\` row) and kernels are semantically equivalent."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          OVERALL=0
+          for impl in mivisionx khronos rustvx; do
+            VX_DUMP="build-${impl}/dump-${impl}"
+            if [ ! -d "$OPENCV_DUMP" ] || [ ! -d "$VX_DUMP" ]; then
+              echo "skipping verify for $impl: missing dump dir ($VX_DUMP or $OPENCV_DUMP)"
+              echo "_Skipped \`$impl\` verify — dump directory missing._" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            set +e
+            python3 scripts/cross_verify_outputs.py \
+              "$OPENCV_DUMP" "$VX_DUMP" \
+              --left-label "OpenCV" --right-label "${impl}" \
+              --json comparisons/cross-verify-${impl}.json \
+              >> "$GITHUB_STEP_SUMMARY"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then OVERALL=1; fi
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          # Surface OVERALL into a step-level marker — the job stays
+          # green on a divergence (so reviewers still see the timing
+          # comparison) but the row is annotated and an artifact link
+          # is uploaded below.
+          if [ "$OVERALL" -ne 0 ]; then
+            echo "::warning::Cross-impl verification flagged ≥1 divergence — see job summary"
+          fi
 
       # ----- Pairwise comparisons -----
       #
@@ -770,4 +934,21 @@ jobs:
         with:
           name: benchmark-comparisons
           path: comparisons/
+          if-no-files-found: ignore
+
+      # Sentinel kernel dumps — uploaded so a reviewer can re-run
+      # `scripts/cross_verify_outputs.py` locally against any pair
+      # without re-running the whole CI build, and so the raw .bin
+      # files are inspectable after the fact for any divergence the
+      # verifier flagged.
+      - name: Upload sentinel output dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-verify-dumps
+          path: |
+            build-mivisionx/dump-mivisionx/
+            build-khronos/dump-khronos/
+            build-rustvx/dump-rustvx/
+            build-opencv-bench/dump-opencv/
           if-no-files-found: ignore

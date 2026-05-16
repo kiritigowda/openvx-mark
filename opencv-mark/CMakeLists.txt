@@ -69,6 +69,7 @@ set(OPENCV_MARK_SOURCES
     src/benchmarks/cv_misc.cpp
     src/benchmarks/cv_multiscale.cpp
     src/benchmarks/cv_feature.cpp
+    src/cv_output_dumper.cpp
 )
 
 add_executable(opencv-mark ${OPENCV_MARK_SOURCES})
