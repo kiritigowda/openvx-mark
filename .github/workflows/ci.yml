@@ -34,16 +34,26 @@ concurrency:
 #     no OpenVX dependency — see the build-opencv job below for the shape.
 #     Stages its smoke JSON directly (no impl tarball needed).
 #
-# Phase 2 (single job, depends on all three) — comparison.
-#   1. Downloads all three impl artifacts onto a single runner.
-#   2. Builds openvx-mark × 3 (one per impl) so all binaries link against the
-#      same openvx-mark source tree at the same commit.
-#   3. Runs the full benchmark (`--feature-set everything --resolution FHD`)
-#      against each impl. Same hardware = fair cross-vendor comparison.
-#   4. Generates three pairwise comparison reports:
-#        * MIVisionX vs Khronos sample
-#        * MIVisionX vs rustVX
-#        * Khronos sample vs rustVX
+# Phase 2 (single job, depends on all four Phase-1 jobs) — comparison.
+#   1. Downloads all three OpenVX impl artifacts onto a single runner;
+#      apt-installs OpenCV on that same runner.
+#   2. Builds openvx-mark × 3 (one per OpenVX impl) so all binaries link
+#      against the same openvx-mark source tree at the same commit.
+#      Builds opencv-mark from the same source tree.
+#   3. Runs the full benchmark (`--feature-set vision[,framework]
+#      --resolution FHD`) against each impl. Same hardware = fair
+#      cross-vendor comparison. opencv-mark runs `vision` only — it
+#      deliberately doesn't implement the OpenVX `framework` feature
+#      set, and `compare_reports.py` ignores not-on-both-sides kernels.
+#   4. Generates six pairwise comparison reports:
+#        OpenVX-vs-OpenVX:
+#          * MIVisionX vs Khronos sample
+#          * MIVisionX vs rustVX
+#          * Khronos sample vs rustVX
+#        OpenVX-vs-OpenCV (the "does adopting OpenVX pay off?" trio):
+#          * MIVisionX vs OpenCV
+#          * Khronos sample vs OpenCV
+#          * rustVX vs OpenCV
 #   5. Posts each report to the job summary and uploads as an artifact.
 #
 # Inspired by the layered build/perf-gate design in rustVX's conformance CI:
@@ -377,14 +387,20 @@ jobs:
   # "does adopting OpenVX actually pay off vs the cv:: code I already have?"
   # at the per-kernel level, on the same CI hardware as every OpenVX impl.
   #
-  # Differs from the OpenVX impl jobs above in two ways:
-  #   1. OpenCV is apt-installable (no from-source build), so the job is
+  # Differs from the OpenVX impl jobs in two ways:
+  #   1. OpenCV is apt-installable (no from-source build), so this job is
   #      much shorter — install, configure parent CMake, build, smoke.
-  #   2. The artifact this job stages is a JSON benchmark report (not a
-  #      libopenvx.so + headers tarball), because there is no separate
-  #      openvx-mark-vs-OpenCV link step — opencv-mark IS the binary that
-  #      runs the OpenCV-side measurements. The downstream comparison job
-  #      consumes this JSON directly alongside the OpenVX impl JSONs.
+  #   2. There is no impl-tarball staging step. opencv-mark IS the binary
+  #      that runs the OpenCV-side measurements; there is no separate
+  #      "link openvx-mark against this libopenvx.so" rebuild downstream.
+  #      The Phase 2 comparison job re-runs opencv-mark itself (after a
+  #      fresh apt-install of OpenCV) for strict same-runner fairness vs
+  #      the per-impl benches — see compare job's `Build & bench
+  #      opencv-mark` step.
+  #
+  # The smoke run here is fast feedback only (catches build/link breakage
+  # in <1 min on every PR); the comparison-grade FHD × 20 iter benchmark
+  # lives in Phase 2 alongside the OpenVX impl benches.
   # --------------------------------------------------------------------------
   build-opencv:
     name: Build opencv-mark (OpenCV baseline) + smoke test
@@ -446,24 +462,37 @@ jobs:
   # --------------------------------------------------------------------------
   # Phase 2 — Pairwise comparison
   #
-  # Pulls all three implementation artifacts onto the same runner so every
-  # benchmark is exercised on identical hardware. Builds openvx-mark once
-  # per impl (against this commit's source tree, not pre-built artifacts —
-  # keeps the comparison binary identical apart from the linked OpenVX lib),
-  # runs the full feature-set bench against each, and emits three pairwise
-  # comparison reports.
+  # Pulls all three OpenVX implementation artifacts onto the same runner,
+  # plus apt-installs OpenCV, so every benchmark is exercised on identical
+  # hardware. Builds openvx-mark once per OpenVX impl (against this commit's
+  # source tree, not pre-built artifacts — keeps the comparison binary
+  # identical apart from the linked OpenVX lib), builds opencv-mark from
+  # the same source tree, runs the full feature-set bench against each,
+  # and emits six pairwise comparison reports:
   #
-  # `if: always()` + per-download `continue-on-error` so a single failed
-  # build still surfaces the comparison signal for the other two impls
-  # instead of losing all visibility.
+  #   OpenVX-vs-OpenVX (3):
+  #     * MIVisionX over Khronos sample          — AMD over reference
+  #     * MIVisionX over rustVX                  — AMD over Rust impl
+  #     * rustVX     over Khronos sample         — Rust impl over reference
+  #
+  #   OpenVX-vs-OpenCV (3) — "does adopting OpenVX pay off?":
+  #     * MIVisionX over OpenCV                  — best-tuned OpenVX vs cv::
+  #     * Khronos sample over OpenCV             — reference OpenVX vs cv::
+  #     * rustVX     over OpenCV                 — Rust OpenVX vs cv::
+  #
+  # `if: always()` + per-download `continue-on-error` + per-bench
+  # `if: always() && steps.detect...` so a single failed build still
+  # surfaces the comparison signal for whichever other impls are
+  # available, instead of losing all visibility.
   # --------------------------------------------------------------------------
   compare:
-    name: Pairwise comparison (MIVisionX, Khronos, rustVX)
+    name: Pairwise comparison (MIVisionX, Khronos, rustVX, OpenCV)
     runs-on: ubuntu-22.04
     needs:
       - build-mivisionx
       - build-khronos-sample
       - build-rustvx
+      - build-opencv
     if: always()
     steps:
       - name: Checkout openvx-mark
@@ -472,7 +501,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake git python3
+          # libopencv-dev is needed so the Phase 2 `Build & bench
+          # opencv-mark` step can re-link opencv-mark on this runner.
+          # Strictly same-hardware fairness vs the per-impl benches.
+          sudo apt-get install -y build-essential cmake git python3 \
+            libopencv-dev
+          pkg-config --modversion opencv4 || true
 
       - name: Download MIVisionX artifact
         uses: actions/download-artifact@v4
@@ -575,6 +609,30 @@ jobs:
             --resolution FHD --iterations 20 --warmup 5 \
             --output-dir results
 
+      # opencv-mark has no OpenVX dependency, so no OPENVX_* flags and no
+      # detect-step gate — it only needs `libopencv-dev` (already installed
+      # above). Same FHD × 20 iter × 5 warmup shape as the OpenVX benches
+      # so per-kernel speedups are directly comparable. Feature-set is
+      # `vision` only — opencv-mark deliberately does not implement the
+      # `framework` set (OpenCV has no equivalent of the OpenVX graph
+      # framework concept), and `compare_reports.py` ignores
+      # not-on-both-sides kernels so the framework rows simply don't
+      # appear in OpenCV pairwise reports.
+      - name: Build & bench opencv-mark
+        if: always()
+        id: bench_opencv
+        run: |
+          set -euo pipefail
+          mkdir -p build-opencv-bench
+          cd build-opencv-bench
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake --build . --target opencv-mark -j$(nproc)
+          test -x opencv-mark/opencv-mark \
+            || { echo "ERROR: opencv-mark not built — OpenCV detection failed in compare job"; exit 1; }
+          ./opencv-mark/opencv-mark --feature-set vision \
+            --resolution FHD --iterations 20 --warmup 5 \
+            --output-dir results
+
       # ----- Pairwise comparisons -----
       #
       # Each comparison is oriented as "<candidate> over <baseline>" so
@@ -600,6 +658,7 @@ jobs:
           M="build-mivisionx/results/benchmark_results.json"
           K="build-khronos/results/benchmark_results.json"
           R="build-rustvx/results/benchmark_results.json"
+          O="build-opencv-bench/results/benchmark_results.json"
 
           do_compare() {
             local candidate="$1" baseline="$2"
@@ -705,11 +764,26 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           }
 
-          # Order: MIVisionX (AMD) over both reference impls, then rustVX
-          # over Khronos sample (the slowest of the three).
+          # OpenVX-vs-OpenVX trio (existing): MIVisionX (AMD) over both
+          # reference impls, then rustVX over Khronos sample (the
+          # slowest of the three).
           do_compare mivisionx khronos "$M" "$K" "MIVisionX (AMD OpenVX)" "Khronos sample"
           do_compare mivisionx rustvx  "$M" "$R" "MIVisionX (AMD OpenVX)" "rustVX"
           do_compare rustvx    khronos "$R" "$K" "rustVX"                 "Khronos sample"
+
+          # OpenVX-vs-OpenCV trio (new in this PR). OpenCV is the
+          # baseline so the speedup column reads as `<OpenVX impl> /
+          # OpenCV` — values >1.00x mean adopting that OpenVX impl pays
+          # off vs writing the equivalent in cv:: directly. This is the
+          # headline question opencv-mark exists to answer.
+          #
+          # Ordered MIVisionX → Khronos → rustVX so the table walks
+          # from the most-tuned OpenVX impl (best case for OpenVX) to
+          # the reference (worst case) — readers see the realistic
+          # range of the OpenVX-vs-OpenCV trade-off.
+          do_compare mivisionx opencv "$M" "$O" "MIVisionX (AMD OpenVX)" "OpenCV"
+          do_compare khronos   opencv "$K" "$O" "Khronos sample"         "OpenCV"
+          do_compare rustvx    opencv "$R" "$O" "rustVX"                 "OpenCV"
 
           echo "--- comparison artifacts ---"
           ls -la comparisons/ || true
@@ -723,6 +797,7 @@ jobs:
             build-mivisionx/results/
             build-khronos/results/
             build-rustvx/results/
+            build-opencv-bench/results/
           if-no-files-found: ignore
 
       - name: Upload pairwise comparisons
