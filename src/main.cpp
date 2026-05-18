@@ -1,3 +1,4 @@
+#include "bench_runtime.h"
 #include "benchmark_config.h"
 #include "benchmark_context.h"
 #include "benchmark_runner.h"
@@ -8,9 +9,18 @@
 #include <VX/vx.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+
+// Forward decl — implemented in src/openvx_output_dumper.cpp. Lives in
+// openvx-mark only (uses VX/vx.h heavily). The opencv-mark binary has
+// its own dumper. The shared bench_runtime helper handles threading +
+// timer validation that has no impl-specific bits.
+namespace openvx_dump {
+int runDumpMode(const BenchmarkConfig& config, vx_context ctx);
+}  // namespace openvx_dump
 
 static void printUsage(const char* prog) {
     printf("Usage: %s [OPTIONS]\n\n", prog);
@@ -47,6 +57,14 @@ static void printUsage(const char* prog) {
     printf("  --format json,csv,markdown    Output formats (default: all three)\n");
     printf("  --verbose                     Verbose output\n");
     printf("  --quiet                       Minimal output\n\n");
+
+    printf("Threading & accuracy:\n");
+    printf("  --threads N                   Threads for OpenMP-using impls (default: 1;\n");
+    printf("                                0 = leave each impl at its own default)\n");
+    printf("  --validate-timing             Run timer self-test (sleep 1/10/100ms,\n");
+    printf("                                report clock resolution + error %%) and exit\n");
+    printf("  --dump-outputs DIR            Dump kernel outputs to DIR for cross-impl\n");
+    printf("                                verification (see scripts/cross_verify_outputs.py)\n\n");
 
     printf("Other:\n");
     printf("  --help                        Show this help\n");
@@ -179,6 +197,16 @@ static bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             }
         } else if (arg == "--compare" && i + 1 < argc) {
             config.compare_files = splitComma(argv[++i]);
+        } else if (arg == "--threads" && i + 1 < argc) {
+            config.threads = atoi(argv[++i]);
+            if (config.threads < 0) {
+                printf("ERROR: --threads must be >= 0 (got %d)\n", config.threads);
+                return false;
+            }
+        } else if (arg == "--validate-timing") {
+            config.validate_timing = true;
+        } else if (arg == "--dump-outputs" && i + 1 < argc) {
+            config.dump_outputs_dir = argv[++i];
         } else {
             printf("Unknown option: %s\n", arg.c_str());
             printUsage(argv[0]);
@@ -198,6 +226,24 @@ int main(int argc, char* argv[]) {
     BenchmarkConfig config;
     if (!parseArgs(argc, argv, config)) {
         return 1;
+    }
+
+    // Apply threading policy BEFORE any benchmark setup so OMP_NUM_THREADS
+    // is visible to MIVisionX's AGO scheduler / any TBB pool that gets
+    // initialised. The opencv-mark equivalent additionally calls
+    // cv::setNumThreads(); openvx-mark only has the env var to wield.
+    {
+        SystemInfo _scratch;
+        bench_runtime::applyThreadingPolicy(config.threads, _scratch);
+    }
+
+    // --validate-timing is a standalone mode — runs the timer self-test
+    // and exits with PASS(0)/FAIL(1). No OpenVX context creation, so it
+    // works even in environments where libopenvx.so is broken.
+    if (config.validate_timing) {
+        SystemInfo info = collectSystemInfo();
+        populateBuildInfo(info);
+        return bench_runtime::runTimerValidation(info);
     }
 
     // Handle comparison mode
@@ -223,6 +269,16 @@ int main(int argc, char* argv[]) {
     printf("  Version:        %d.%d\n", (context.version() >> 8) & 0xFF,
            context.version() & 0xFF);
     printf("  Kernels:        %u\n\n", context.numKernels());
+
+    // --dump-outputs is a standalone mode — runs the sentinel kernel
+    // suite once at a fixed deterministic resolution and writes raw
+    // pixel bytes + a manifest.json to the output dir for cross-impl
+    // verification. We do this BEFORE the regular benchmark path
+    // because dump runs don't need 100 iterations and shouldn't be
+    // mixed with timing data.
+    if (!config.dump_outputs_dir.empty()) {
+        return openvx_dump::runDumpMode(config, context.handle());
+    }
 
     // Probe kernel availability
     printf("[2/5] Probing kernel availability...\n");
@@ -255,6 +311,11 @@ int main(int argc, char* argv[]) {
     sys_info.vx_extensions = context.extensions();
     sys_info.benchmark_version = OPENVX_MARK_VERSION;
     sys_info.benchmark_git_commit = GIT_COMMIT_SHA;
+    // Build provenance + threading policy snapshot. The applyThreadingPolicy
+    // call up at start-of-main already setenv'd OMP_NUM_THREADS; this one
+    // just re-reads it into the SystemInfo that will be serialised.
+    populateBuildInfo(sys_info);
+    bench_runtime::applyThreadingPolicy(config.threads, sys_info);
     printf("  Host: %s (%s %s)\n", sys_info.hostname.c_str(),
            sys_info.os_name.c_str(), sys_info.os_version.c_str());
     printf("  CPU:  %s (%d cores)\n\n", sys_info.cpu_model.c_str(), sys_info.cpu_cores);

@@ -58,6 +58,29 @@ struct BenchmarkConfig {
     double stability_threshold = 15.0;  // CV% threshold for stability warning
     int max_retries = 0;                // 0 = no retries
 
+    // Threading policy — applied early in main() before any kernel runs.
+    //   0  → leave the impl/library default in place (OpenCV: nproc;
+    //        MIVisionX CPU: single; rustVX: single; Khronos sample: single)
+    //   1+ → pin to N (opencv-mark via cv::setNumThreads; openvx-mark sets
+    //        OMP_NUM_THREADS for any OpenMP-using impl downstream)
+    //
+    // Default 1 gives single-threaded apples-to-apples comparison. Set 0
+    // to compare each impl at its own default (useful for headline "max
+    // perf" numbers but no longer a fair per-kernel cross-impl compare).
+    int threads = 1;
+
+    // Timer self-test — runs the validation harness instead of any
+    // benchmark. Exit code reflects PASS/FAIL of the timer audit.
+    bool validate_timing = false;
+
+    // Output dump for cross-implementation numerical verification.
+    // When non-empty, switches to "dump mode": runs a sentinel set of
+    // kernels at a fixed resolution and writes raw outputs + manifest to
+    // this directory. scripts/cross_verify_outputs.py reads two such
+    // dumps and computes per-kernel PSNR / max-abs-diff. See PR
+    // description for the sentinel list rationale.
+    std::string dump_outputs_dir;
+
     // Comparison
     std::vector<std::string> compare_files;
 
