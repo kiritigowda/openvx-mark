@@ -39,6 +39,8 @@ void printUsage(const char* prog) {
     printf("Linked against OpenCV %s\n\n", OPENCV_VERSION_STRING);
 
     printf("Benchmark Selection:\n");
+    printf("  --vision-parity               Run one apples-to-apples row for each of the\n");
+    printf("                                41 OpenVX vision kernels\n");
     printf("  --feature-set SET[,SET,...]   Currently only 'vision' is supported\n");
     printf("  --category CAT[,CAT,...]      Filter by category (filters,color,geometric,\n");
     printf("                                pixelwise,statistical,misc,multiscale,feature)\n");
@@ -103,6 +105,9 @@ bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             // parse failures (mapped to exit 1 by main).
             printUsage(argv[0]);
             std::exit(0);
+        } else if (arg == "--vision-parity") {
+            config.feature_sets = {"vision"};
+            config.kernels = getVisionParityKernels();
         } else if (arg == "--feature-set" && i + 1 < argc) {
             // PR1 only supports the "vision" feature set on the OpenCV
             // side; "framework" and "enhanced_vision" are intentionally
@@ -277,6 +282,7 @@ int main(int argc, char* argv[]) {
     sys_info.vx_vendor_id      = cv_ctx.vendorId();
     sys_info.vx_version        = cv_ctx.version();
     sys_info.vx_extensions     = cv_ctx.buildOptions();
+    sys_info.benchmark_tool = "opencv-mark";
     sys_info.benchmark_version = OPENCV_MARK_VERSION;
     sys_info.benchmark_git_commit = GIT_COMMIT_SHA;
     // Build + threading provenance. cv::getNumThreads() is captured AFTER

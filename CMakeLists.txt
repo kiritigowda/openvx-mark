@@ -42,7 +42,7 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND EXISTS "${ROCM_PATH}/lib/llvm/bin/amdclang
     set(CMAKE_CXX_COMPILER ${ROCM_PATH}/lib/llvm/bin/amdclang++)
 endif()
 
-project(openvx-mark VERSION 1.0.0)
+project(openvx-mark VERSION 1.1.0)
 
 # Git commit SHA for version tracking
 execute_process(

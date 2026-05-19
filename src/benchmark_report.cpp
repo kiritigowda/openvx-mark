@@ -311,6 +311,7 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
 
     // Benchmark version
     f << "  \"benchmark\": {\n";
+    f << "    \"tool\": \"" << jsonEscape(sys_info_.benchmark_tool) << "\",\n";
     f << "    \"version\": \"" << jsonEscape(sys_info_.benchmark_version) << "\",\n";
     f << "    \"git_commit\": \"" << jsonEscape(sys_info_.benchmark_git_commit) << "\"\n";
     f << "  },\n";
@@ -1105,6 +1106,7 @@ struct ReportInfo {
     std::string os_name;
     std::string os_version;
     std::string timestamp;
+    std::string benchmark_tool;
     std::string benchmark_version;
     std::string git_commit;
     double vision_score = 0;
@@ -1131,6 +1133,7 @@ static ReportInfo extractReportInfo(const std::string& json) {
     info.impl_name = extractJsonString(openvx, "implementation");
 
     std::string bench = extractJsonSection(json, "benchmark");
+    info.benchmark_tool = extractJsonString(bench, "tool");
     info.benchmark_version = extractJsonString(bench, "version");
     info.git_commit = extractJsonString(bench, "git_commit");
 
@@ -1151,6 +1154,12 @@ static ReportInfo extractReportInfo(const std::string& json) {
     }
 
     return info;
+}
+
+static bool isOpenCVReport(const ReportInfo& info) {
+    return info.benchmark_tool == "opencv-mark" ||
+           info.impl_name.find("OpenCV") != std::string::npos ||
+           info.impl_name.find("opencv") != std::string::npos;
 }
 
 struct ComparisonEntry {
@@ -1200,6 +1209,14 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
 
     ReportInfo info_a = extractReportInfo(baseline_json);
     ReportInfo info_b = extractReportInfo(current_json);
+
+    // OpenCV is the comparison baseline. If callers pass files in the
+    // opposite order, normalize it here so speedup still means
+    // non-OpenCV throughput divided by OpenCV throughput.
+    if (isOpenCVReport(info_b) && !isOpenCVReport(info_a)) {
+        std::swap(baseline_json, current_json);
+        std::swap(info_a, info_b);
+    }
 
     std::string name_a = info_a.impl_name.empty() ? "Baseline" : info_a.impl_name;
     std::string name_b = info_b.impl_name.empty() ? "Current" : info_b.impl_name;

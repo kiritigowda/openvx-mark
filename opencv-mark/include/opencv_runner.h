@@ -50,6 +50,10 @@ struct CaseBuffers {
     cv::Mat input_extra;   // optional second input (e.g. warp matrix)
     cv::Mat output;
     cv::Mat output_extra;  // optional second output (e.g. Sobel dy)
+    std::vector<cv::Point2f> points_prev;  // optional feature tracks
+    std::vector<cv::Point2f> points_next;
+    std::vector<unsigned char> status;
+    std::vector<float> error;
 };
 
 struct OpenCVBenchmarkCase {

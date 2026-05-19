@@ -48,6 +48,16 @@ def get_impl_name(report, path='unknown'):
     return report.get('openvx', {}).get('implementation', os.path.basename(path))
 
 
+def get_benchmark_tool(report):
+    return report.get('benchmark', {}).get('tool', '')
+
+
+def is_opencv_report(report):
+    tool = get_benchmark_tool(report).lower()
+    impl = report.get('openvx', {}).get('implementation', '').lower()
+    return tool == 'opencv-mark' or 'opencv' in impl
+
+
 def build_result_map(report):
     """Build a dict keyed by (name, mode, resolution) -> result"""
     result_map = {}
@@ -87,6 +97,18 @@ def compare(reports, paths):
     all_keys = sorted(all_keys)
 
     return impl_names, result_maps, all_keys, system_infos
+
+
+def normalize_report_order(reports, paths):
+    """Use OpenCV as baseline when comparing exactly one OpenCV and one non-OpenCV report."""
+    if len(reports) != 2:
+        return reports, paths
+
+    first_is_opencv = is_opencv_report(reports[0])
+    second_is_opencv = is_opencv_report(reports[1])
+    if second_is_opencv and not first_is_opencv:
+        return [reports[1], reports[0]], [paths[1], paths[0]]
+    return reports, paths
 
 
 def write_markdown(impl_names, result_maps, all_keys, output_path, reports, system_infos=None):
@@ -562,6 +584,7 @@ def main():
             sys.exit(1)
         reports.append(load_report(path))
 
+    reports, args.reports = normalize_report_order(reports, args.reports)
     impl_names, result_maps, all_keys, system_infos = compare(reports, args.reports)
 
     write_markdown(impl_names, result_maps, all_keys, args.output, reports, system_infos)

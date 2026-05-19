@@ -27,6 +27,10 @@
 //   * `cv::filter2D` for CustomConvolution uses a 3x3 CV_16S kernel
 //     identical to the one openvx-mark feeds vxConvolveNode, with
 //     ddepth=CV_8U, anchor at centre, delta=0, BORDER_REPLICATE.
+//   * `NonLinearFilter` is the OpenVX 1.1 median nonlinear-filter case
+//     with a 3x3 all-ones mask. OpenCV's direct equivalent is another
+//     `cv::medianBlur(..., ksize=3)` row, kept under the OpenVX kernel
+//     name so the 41-kernel parity preset has a one-to-one join target.
 
 #include "opencv_runner.h"
 #include "opencv_verify.h"
@@ -214,6 +218,29 @@ std::vector<OpenCVBenchmarkCase> registerCvFilterBenchmarks() {
             k.at<int16_t>(1, 1) = 1;
             cv::Mat out;
             cv::filter2D(in, out, CV_8U, k, cv::Point(-1, -1), 0, cv::BORDER_REPLICATE);
+            return out.at<uint8_t>(32, 32) == 100;
+        };
+        cases.push_back(bc);
+    }
+
+    // NonLinearFilter — U8 in, U8 out, median mode with 3x3 all-ones mask.
+    {
+        OpenCVBenchmarkCase bc;
+        bc.name = "NonLinearFilter";
+        bc.category = "filters";
+        bc.feature_set = "vision";
+        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+            bufs.input = gen.makeU8(w, h);
+            bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_8UC1);
+            return true;
+        };
+        bc.run_fn = [](CaseBuffers& bufs) {
+            cv::medianBlur(bufs.input, bufs.output, /*ksize=*/3);
+        };
+        bc.verify_fn = []() -> bool {
+            cv::Mat in(64, 64, CV_8UC1, cv::Scalar(100));
+            cv::Mat out;
+            cv::medianBlur(in, out, 3);
             return out.at<uint8_t>(32, 32) == 100;
         };
         cases.push_back(bc);
