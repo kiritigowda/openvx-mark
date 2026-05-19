@@ -21,6 +21,7 @@ struct SystemInfo {
     std::string vx_extensions;
 
     // Benchmark version tracking
+    std::string benchmark_tool;     // e.g. "openvx-mark" or "opencv-mark"
     std::string benchmark_version;
     std::string benchmark_git_commit;
 

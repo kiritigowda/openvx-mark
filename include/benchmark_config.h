@@ -23,6 +23,29 @@ inline const std::map<std::string, Resolution>& getResolutionPresets() {
     return presets;
 }
 
+inline const std::vector<std::string>& getVisionParityKernels() {
+    static const std::vector<std::string> kernels = {
+        // Pixel-wise
+        "And", "Or", "Xor", "Not", "AbsDiff", "Add", "Subtract", "Multiply",
+        // Filters
+        "Box3x3", "Gaussian3x3", "Median3x3", "Erode3x3", "Dilate3x3",
+        "Sobel3x3", "CustomConvolution", "NonLinearFilter",
+        // Color
+        "ColorConvert_RGB2IYUV", "ChannelExtract", "ChannelCombine", "ConvertDepth",
+        // Geometric
+        "ScaleImage_Half", "WarpAffine", "WarpPerspective", "Remap",
+        // Statistical
+        "Histogram", "EqualizeHist", "MeanStdDev", "MinMaxLoc", "IntegralImage",
+        // Multi-scale
+        "GaussianPyramid", "LaplacianPyramid", "HalfScaleGaussian",
+        // Features
+        "CannyEdgeDetector", "HarrisCorners", "FastCorners", "OpticalFlowPyrLK",
+        // Misc
+        "Magnitude", "Phase", "TableLookup", "Threshold_Binary", "WeightedAverage",
+    };
+    return kernels;
+}
+
 struct BenchmarkConfig {
     // Resolutions to test
     std::vector<Resolution> resolutions = {

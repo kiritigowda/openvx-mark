@@ -29,6 +29,8 @@ static void printUsage(const char* prog) {
 
     printf("Benchmark Selection:\n");
     printf("  --all                         Run all kernel benchmarks (vision + enhanced_vision)\n");
+    printf("  --vision-parity               Run one apples-to-apples row for each of the\n");
+    printf("                                41 OpenVX vision kernels\n");
     printf("  --feature-set SET[,SET,...]   Feature sets: vision,enhanced_vision,framework,all,everything\n");
     printf("                                (default: vision; 'all' = kernels only;\n");
     printf("                                 'everything' = kernels + framework)\n");
@@ -98,6 +100,11 @@ static bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             return false;
         } else if (arg == "--all") {
             config.feature_sets = {"vision", "enhanced_vision"};
+        } else if (arg == "--vision-parity") {
+            config.feature_sets = {"vision"};
+            config.kernels = getVisionParityKernels();
+            config.skip_pipelines = true;
+            config.mode = BenchmarkConfig::Mode::GRAPH;
         } else if (arg == "--category" && i + 1 < argc) {
             config.categories = splitComma(argv[++i]);
         } else if (arg == "--kernel" && i + 1 < argc) {
@@ -309,6 +316,7 @@ int main(int argc, char* argv[]) {
     sys_info.vx_version = context.version();
     sys_info.vx_num_kernels = context.numKernels();
     sys_info.vx_extensions = context.extensions();
+    sys_info.benchmark_tool = "openvx-mark";
     sys_info.benchmark_version = OPENVX_MARK_VERSION;
     sys_info.benchmark_git_commit = GIT_COMMIT_SHA;
     // Build provenance + threading policy snapshot. The applyThreadingPolicy

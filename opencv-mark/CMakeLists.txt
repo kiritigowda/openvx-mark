@@ -46,7 +46,7 @@
 #
 ################################################################################
 
-find_package(OpenCV 4 QUIET COMPONENTS core imgproc features2d)
+find_package(OpenCV 4 QUIET COMPONENTS core imgproc features2d video)
 if(NOT OpenCV_FOUND)
     message(STATUS "opencv-mark: OpenCV 4 not found — skipping companion binary build.")
     message(STATUS "             Install opencv4 (e.g. apt install libopencv-dev / brew install opencv) to enable.")
