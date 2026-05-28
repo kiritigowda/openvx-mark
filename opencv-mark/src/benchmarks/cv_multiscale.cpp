@@ -236,19 +236,37 @@ std::vector<OpenCVBenchmarkCase> registerCvMultiscaleBenchmarks() {
         cases.push_back(bc);
     }
 
-    // NOTE: `LaplacianPyramid_S16` is intentionally NOT registered.
-    // The OpenVX-side benchmark was removed in this PR because the
-    // OpenVX 1.3.1 spec self-contradicts on S16 LaplacianPyramid
-    // (§3.30 [REQ-0265] permits S16 input, but §3.30's algorithm
-    // description mandates an internal Gaussian pyramid step which
-    // §3.23 [REQ-0191] restricts to U8 input). Every conformant
-    // OpenVX impl rejects S16 LaplacianPyramid with
-    // VX_ERROR_FORMAT_NOT_SUPPORTED at verify time. Keeping an
-    // OpenCV-only S16 row here would produce a permanently
-    // unjoinable `N/A` column in every cross-impl comparison —
-    // which is misleading. cv::pyrDown does support CV_16S, so the
-    // OpenCV-side benchmark would technically work, but there's
-    // nothing on the OpenVX side to compare it against.
+    // LaplacianPyramid_S16 — S16 in, S16 working buffers throughout.
+    {
+        OpenCVBenchmarkCase bc;
+        bc.name = "LaplacianPyramid_S16";
+        bc.category = "multiscale";
+        bc.feature_set = "vision";
+        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+            bufs.input = gen.makeS16(w, h);
+            return true;
+        };
+        bc.run_fn = [](CaseBuffers& bufs) {
+            cv::Mat current = bufs.input;
+            for (int i = 0; i < DEFAULT_PYRAMID_LEVELS - 1; ++i) {
+                cv::Mat down, up, diff;
+                cv::pyrDown(current, down);
+                cv::pyrUp(down, up, current.size());
+                cv::subtract(current, up, diff);  // dtype follows input (CV_16S)
+                current = down;
+            }
+            (void)current.cols;
+        };
+        bc.verify_fn = []() -> bool {
+            cv::Mat in(64, 64, CV_16SC1, cv::Scalar(500));
+            cv::Mat down, up, diff;
+            cv::pyrDown(in, down);
+            cv::pyrUp(down, up, in.size());
+            cv::subtract(in, up, diff);
+            return diff.type() == CV_16SC1 && diff.cols == 64 && diff.rows == 64;
+        };
+        cases.push_back(bc);
+    }
 
     // LaplacianReconstruct — inverse of LaplacianPyramid: chain of
     // pyrUp + add per level, reconstructing the full-resolution image
@@ -305,11 +323,46 @@ std::vector<OpenCVBenchmarkCase> registerCvMultiscaleBenchmarks() {
         cases.push_back(bc);
     }
 
-    // NOTE: `LaplacianReconstruct_S16` is intentionally NOT registered
-    // — same reason as `LaplacianPyramid_S16` above (no OpenVX impl
-    // can implement the S16 path because LaplacianPyramid itself is
-    // U8-only in practice, and there'd be no OpenVX-side numbers to
-    // compare against).
+    // LaplacianReconstruct_S16 — same chain on CV_16SC1 buffers.
+    {
+        OpenCVBenchmarkCase bc;
+        bc.name = "LaplacianReconstruct_S16";
+        bc.category = "multiscale";
+        bc.feature_set = "vision";
+        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+            const int shift = DEFAULT_PYRAMID_LEVELS - 1;
+            uint32_t low_w = std::max<uint32_t>(1, w >> shift);
+            uint32_t low_h = std::max<uint32_t>(1, h >> shift);
+            bufs.input = gen.makeS16(low_w, low_h);
+            bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_16SC1);
+            return true;
+        };
+        bc.run_fn = [](CaseBuffers& bufs) {
+            cv::Mat current = bufs.input;
+            const int shift = DEFAULT_PYRAMID_LEVELS - 1;
+            for (int i = shift - 1; i >= 0; --i) {
+                cv::Mat up;
+                cv::Size up_size(std::max(1, bufs.output.cols >> i),
+                                 std::max(1, bufs.output.rows >> i));
+                cv::pyrUp(current, up, up_size);
+                cv::Mat zeros = cv::Mat::zeros(up.size(), up.type());
+                cv::add(up, zeros, up);
+                current = up;
+            }
+            current.copyTo(bufs.output);
+        };
+        bc.verify_fn = []() -> bool {
+            cv::Mat in(12, 16, CV_16SC1, cv::Scalar(500));
+            cv::Mat cur = in;
+            for (int i = 0; i < 3; ++i) {
+                cv::Mat up;
+                cv::pyrUp(cur, up);
+                cur = up;
+            }
+            return cur.cols == 128 && cur.rows == 96 && cur.type() == CV_16SC1;
+        };
+        cases.push_back(bc);
+    }
 
     return cases;
 }

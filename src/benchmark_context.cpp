@@ -1,15 +1,68 @@
 #include "benchmark_context.h"
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
+
+namespace {
+
+// Per-process dedup state for the VX log callback.
+//
+// Background: some drivers (notably AMD MIVisionX/AGO) emit a fresh
+// [VX LOG] line every time vxVerifyGraph is called for an unsupported
+// kernel parameter combination. The runner verifies once per (warmup +
+// measured) iteration, so a single skipped benchmark can produce e.g.
+// 5 identical "status=-14: ERROR: agoVerifyGraph: kernel ...:
+// ago_kernel_cmd_validate failed (-14)" lines that visually swamp the
+// bench output and obscure the actual numbers (see LaplacianPyramid_S16
+// / LaplacianReconstruct_S16).
+//
+// We keep the first occurrence per-benchmark verbatim (signal preserved)
+// and, when the same (status, string) pair fires again *within the same
+// benchmark*, suppress it. The runner calls resetLogDedup() before each
+// benchmark to flush state so each bench gets its own first-line copy.
+//
+// Thread-safety: VX log callbacks for a given context are delivered
+// serially; the bench runner is single-threaded across cases. Simple
+// statics suffice.
+int g_last_status = VX_SUCCESS;
+std::string g_last_text;
+int g_suppressed_count = 0;
+
+void flush_suppressed() {
+    if (g_suppressed_count > 0) {
+        printf("[VX LOG] (previous message repeated %d more time%s)\n",
+               g_suppressed_count, g_suppressed_count == 1 ? "" : "s");
+        g_suppressed_count = 0;
+    }
+}
+
+} // namespace
+
+void BenchmarkContext::resetLogDedup() {
+    flush_suppressed();
+    g_last_status = VX_SUCCESS;
+    g_last_text.clear();
+}
 
 void VX_CALLBACK BenchmarkContext::logCallback(vx_context /*context*/, vx_reference /*ref*/,
                                                vx_status status, const vx_char string[]) {
-    if (status == VX_SUCCESS) {
-        printf("[VX LOG] %s\n", string);
-    } else {
-        printf("[VX LOG] status=%d: %s\n", status, string);
+    const std::string text = string ? string : "";
+
+    if (status == g_last_status && !g_last_text.empty() && text == g_last_text) {
+        ++g_suppressed_count;
+        return;
     }
+
+    flush_suppressed();
+
+    if (status == VX_SUCCESS) {
+        printf("[VX LOG] %s\n", text.c_str());
+    } else {
+        printf("[VX LOG] status=%d: %s\n", status, text.c_str());
+    }
+    g_last_status = status;
+    g_last_text = text;
 }
 
 BenchmarkContext::BenchmarkContext() {

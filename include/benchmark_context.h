@@ -25,6 +25,12 @@ public:
 
     bool isValid() const { return context_ != nullptr; }
 
+    // Reset the per-benchmark log-dedup state. The runner calls this
+    // before each benchmark so each bench gets at least one verbatim
+    // copy of any [VX LOG] line a driver produces (signal preserved),
+    // while still suppressing intra-bench duplicates (noise removed).
+    static void resetLogDedup();
+
 private:
     static void VX_CALLBACK logCallback(vx_context context, vx_reference ref,
                                         vx_status status, const vx_char string[]);

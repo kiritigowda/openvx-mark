@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`LaplacianPyramid_S16` / `LaplacianReconstruct_S16` are kept, not
+  removed.** An earlier commit (`e4f734a`, since reverted) deleted these
+  two benchmarks under the false assumption that no implementation could
+  support the S16 input path. CI evidence shows otherwise — rustVX runs
+  both at ~10 ms (FHD) — so removing them lost real cross-impl signal.
+  The benchmarks are restored. The cross-impl matrix we now observe in
+  CI is documented inline in `src/benchmarks/node_multiscale.cpp`:
+  - **rustVX** : runs the S16 path to completion (measured timings).
+  - **Khronos sample** : runs the S16 path.
+  - **AMD MIVisionX** : rejects at `vxVerifyGraph` with
+    `VX_ERROR_INVALID_FORMAT` (-14). This is an *impl gap*, not a spec
+    contradiction — the runner records it as a clean SKIP and the
+    benchmark surfaces exactly the kind of cross-vendor difference this
+    suite is designed to expose.
+- **`verify_fn` of S16 Laplacian variants now also accepts
+  `VX_ERROR_INVALID_FORMAT`** in addition to `VX_ERROR_NOT_SUPPORTED`,
+  matching what AMD MIVisionX actually returns from `vxVerifyGraph`.
+  The runner already handled this at the bench level (any non-
+  `VX_SUCCESS` verify status → `supported=false` → SKIP); this change
+  makes the standalone verify path consistent.
+
+### Changed
+
+- **`[VX LOG]` callback now deduplicates consecutive identical
+  messages within a single benchmark.** Some drivers (notably AMD
+  MIVisionX/AGO) log the same validate error on every call to
+  `vxVerifyGraph` / `vxProcessGraph` — so a single skipped benchmark
+  with `warmup=1 iterations=3` would produce 5 identical
+  `status=-14: ERROR: agoVerifyGraph: ... ago_kernel_cmd_validate
+  failed (-14)` lines, swamping the actual timings.
+
+  The first occurrence is now always printed verbatim (full signal
+  preserved); subsequent identical `(status, text)` pairs *within the
+  same benchmark* are folded into a `(previous message repeated N
+  more times)` line emitted at the next non-matching message or at
+  the start of the next benchmark. `BenchmarkContext::resetLogDedup()`
+  is called at the top of `runGraphMode` / `runImmediateMode` so each
+  bench is guaranteed at least one verbatim copy of any driver log.
+
 ## [1.1.0] — OpenCV parity comparisons
 
 ### Added — Vision Conformance Feature Set completion (42/42) & per-spec input/output coverage
@@ -41,14 +82,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
     `WarpAffine_Nearest`, `WarpPerspective_Nearest`, `Remap_Nearest`
   - Multiscale: `LaplacianReconstruct` (the missing 42nd kernel),
     `GaussianPyramid_ORB` (`VX_SCALE_PYRAMID_ORB` per [REQ-0189]),
+    `LaplacianPyramid_S16`, `LaplacianReconstruct_S16`,
     `HalfScaleGaussian_1x1`, `HalfScaleGaussian_5x5`
-    (kernel_size ∈ {1, 3, 5} per [REQ-0410]).
-    S16 Laplacian{Pyramid,Reconstruct} variants are intentionally
-    NOT registered — §3.30 [REQ-0265] permits S16 input but §3.30's
-    algorithm description requires an internal `vxGaussianPyramid`
-    step that §3.23 [REQ-0191] restricts to U8 input. Every
-    conformant impl rejects S16 LaplacianPyramid with
-    `VX_ERROR_FORMAT_NOT_SUPPORTED` at verify time.
+    (kernel_size ∈ {1, 3, 5} per [REQ-0410])
   - Statistical: `MinMaxLoc_S16` (S16 input per [REQ-0315])
   - Misc: `TableLookup_S16` (S16 LUT path per [REQ-0422]),
     `Threshold_S16` (S16 input per [REQ-0493], 1.3-gated)
