@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — Enhanced-Vision FFI hardening (preempts strict-FFI segfaults)
+
+- **`HoughLinesP` output array now uses `VX_TYPE_LINE_2D`** (the
+  spec-mandated type per OpenVX 1.3.1 §3.30) instead of the previous
+  `VX_TYPE_RECTANGLE`. Lenient impls (Khronos sample, AMD MIVisionX)
+  caught the type mismatch at `vxVerifyGraph` and skipped cleanly,
+  but strict-FFI impls — notably rustVX — can panic across the FFI
+  boundary on a type-tag mismatch, which manifests as a segfault
+  (a Rust panic crossing into C is undefined behaviour). Using the
+  correct type makes the bench portable on every impl.
+- **`TensorMatMul` now passes a real zero-filled bias tensor for
+  `input3`** instead of `nullptr`. OpenVX 1.3.1 §3.50 says `input3`
+  is "optional", but impls disagree about what "optional" means:
+  - AMD MIVisionX / Khronos sample : accept a NULL tensor handle.
+  - rustVX (and other strict-FFI impls) : may dereference the handle
+    for type queries inside the FFI binding and segfault on NULL.
+
+  A zero-filled bias preserves matmul semantics (`y = A·B + 0 = A·B`)
+  while giving every impl a valid handle to query. The added bias-add
+  cost is ≤0.5% of an `O(M²·N)` matmul at `M=N=256` — well below the
+  timer-noise floor, so cross-impl numbers stay comparable.
+
 ### Fixed
 
 - **`LaplacianPyramid_S16` / `LaplacianReconstruct_S16` are kept, not

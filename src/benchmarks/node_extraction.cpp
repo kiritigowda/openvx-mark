@@ -365,8 +365,16 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
                 gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
             if (vxGetStatus((vx_reference)input) != VX_SUCCESS) return false;
 
+            // OpenVX 1.3.1 §3.30: HoughLinesP outputs an array of
+            // vx_line2d_t (NOT vx_rectangle_t — those are different
+            // structs). Using the wrong type tag here would (a) be
+            // caught by lenient impls at vxVerifyGraph with a clean
+            // skip, but (b) cause a Rust-FFI panic on strict impls
+            // like rustVX, where a panic across the FFI boundary is
+            // undefined behaviour and manifests as a segfault. Use
+            // the spec-mandated VX_TYPE_LINE_2D.
             vx_array lines = tracker.trackArray(
-                vxCreateArray(ctx, VX_TYPE_RECTANGLE, 1024));
+                vxCreateArray(ctx, VX_TYPE_LINE_2D, 1024));
             if (vxGetStatus((vx_reference)lines) != VX_SUCCESS) return false;
 
             vx_size zero = 0;

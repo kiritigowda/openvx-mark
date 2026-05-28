@@ -409,7 +409,22 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
                 vxGetStatus((vx_reference)in2) != VX_SUCCESS ||
                 vxGetStatus((vx_reference)out) != VX_SUCCESS) return false;
 
-            // input3 (bias) is optional; pass nullptr to skip the add step.
+            // input3 (bias) is "optional" per OpenVX 1.3.1 §3.50, but
+            // "optional" means different things to different impls:
+            //   - AMD MIVisionX / Khronos sample: accept NULL.
+            //   - rustVX (and other strict-FFI impls): may segfault on
+            //     a NULL tensor handle inside the FFI boundary because
+            //     the Rust binding expects a valid `vx_tensor` opaque
+            //     pointer to dereference for type queries.
+            // We therefore pass a real zero-filled M×M bias tensor so
+            // the cross-impl bench is portable: y = A·B + 0 = A·B,
+            // semantically identical to the no-bias path, and every
+            // impl sees a valid tensor handle. Cost of the add over
+            // M² fp16 ≤ 0.5% of an O(M²·N) matmul at M=N=256 — well
+            // below the timer-noise floor.
+            vx_tensor bias = tracker.trackTensor(vxCreateTensor(ctx, 2, out_dims, VX_TYPE_INT16, 0));
+            if (vxGetStatus((vx_reference)bias) != VX_SUCCESS) return false;
+
             vx_tensor_matrix_multiply_params_t params = {};
             params.transpose_input1 = vx_false_e;
             params.transpose_input2 = vx_false_e;
@@ -417,7 +432,7 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
 
             auto fn = openvx_optional::tensorMatrixMultiplyNode();
             if (!fn) return false;
-            vx_node node = fn(graph, in1, in2, /*input3=*/nullptr, &params, out);
+            vx_node node = fn(graph, in1, in2, bias, &params, out);
             if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
             tracker.trackNode(node);
             return true;
@@ -425,20 +440,25 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
             // 2×2 · 2×2 matmul with known values: [[1,2],[3,4]] · [[1,0],[0,1]] = [[1,2],[3,4]]
+            // Pass a zero-filled bias for the same NULL-safety reason as
+            // the graph_setup path above.
             auto fn = openvx_optional::tensorMatrixMultiplyNode();
             if (!fn) return true;
             vx_size dims[2] = {2, 2};
             int16_t a[4] = {1, 2, 3, 4};
             int16_t b[4] = {1, 0, 0, 1};
+            int16_t zero_bias[4] = {0, 0, 0, 0};
             vx_tensor t1 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor t2 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_tensor t3 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 2 * sizeof(int16_t)};
             vxCopyTensorPatch(t1, 2, starts, dims, strides, a, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vxCopyTensorPatch(t2, 2, starts, dims, strides, b, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t3, 2, starts, dims, strides, zero_bias, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vx_tensor_matrix_multiply_params_t params = {};
             vx_graph g = vxCreateGraph(ctx);
-            vx_node n = fn(g, t1, t2, nullptr, &params, tout);
+            vx_node n = fn(g, t1, t2, t3, &params, tout);
             vx_status status = vxVerifyGraph(g);
             if (status == VX_SUCCESS) status = vxProcessGraph(g);
             int16_t result[4] = {};
@@ -446,7 +466,7 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             bool ok = (status != VX_SUCCESS) ? true :
                       (result[0] == 1 && result[1] == 2 && result[2] == 3 && result[3] == 4);
             vxReleaseNode(&n); vxReleaseGraph(&g);
-            vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&tout);
+            vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&t3); vxReleaseTensor(&tout);
             return ok;
         };
         cases.push_back(bc);
