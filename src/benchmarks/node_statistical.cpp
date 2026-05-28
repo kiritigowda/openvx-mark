@@ -151,7 +151,12 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
         cases.push_back(bc);
     }
 
-    // ---- MinMaxLoc ----
+    // ---- MinMaxLoc (U8 input) ----
+    //
+    // OpenVX 1.3.1 §3.37 [REQ-0315]: MinMaxLoc accepts U8 or S16 input.
+    // The S16 case has a wider value range (so the comparison logic and
+    // the matching-location array filtering must handle negatives), so we
+    // benchmark it as a separate test.
     {
         BenchmarkCase bc;
         bc.name        = "MinMaxLoc";
@@ -212,6 +217,80 @@ std::vector<BenchmarkCase> registerStatisticalBenchmarks()
             vxCopyScalar(s_min, &min_val, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
             vxCopyScalar(s_max, &max_val, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
             bool ok = (status != VX_SUCCESS) ? true : (min_val == 50 && max_val == 200);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseScalar(&s_min); vxReleaseScalar(&s_max);
+            vxReleaseScalar(&s_min_count); vxReleaseScalar(&s_max_count);
+            vxReleaseArray(&min_loc); vxReleaseArray(&max_loc);
+            vxReleaseImage(&in);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- MinMaxLoc_S16 (S16 input) ----
+    {
+        BenchmarkCase bc;
+        bc.name        = "MinMaxLoc_S16";
+        bc.category    = "statistical";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_MINMAXLOC;
+        bc.required_kernels = {VX_KERNEL_MINMAXLOC};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image input = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+
+            // Per spec [REQ-0316/0317]: minVal/maxVal must match the input type.
+            vx_int16 init_s16 = 0;
+            vx_scalar minVal = tracker.trackScalar(
+                gen.createScalar(ctx, VX_TYPE_INT16, &init_s16));
+            vx_scalar maxVal = tracker.trackScalar(
+                gen.createScalar(ctx, VX_TYPE_INT16, &init_s16));
+
+            vx_array minLoc = tracker.trackArray(
+                vxCreateArray(ctx, VX_TYPE_COORDINATES2D, 1));
+            vx_array maxLoc = tracker.trackArray(
+                vxCreateArray(ctx, VX_TYPE_COORDINATES2D, 1));
+
+            vx_uint32 count_init = 0;
+            vx_scalar minCount = tracker.trackScalar(
+                gen.createScalar(ctx, VX_TYPE_UINT32, &count_init));
+            vx_scalar maxCount = tracker.trackScalar(
+                gen.createScalar(ctx, VX_TYPE_UINT32, &count_init));
+
+            vx_node node = vxMinMaxLocNode(graph, input,
+                                           minVal, maxVal,
+                                           minLoc, maxLoc,
+                                           minCount, maxCount);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // S16 image with negative min and large positive max to prove
+            // the kernel honours the signed range.
+            std::vector<int16_t> a(64 * 64, 100);
+            a[0] = -1000;
+            a[1] = 10000;
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                              reinterpret_cast<const uint8_t*>(a.data()));
+            if (!in) return true;
+            vx_int16 min_val = 0, max_val = 0;
+            vx_uint32 min_count = 0, max_count = 0;
+            vx_scalar s_min = vxCreateScalar(ctx, VX_TYPE_INT16, &min_val);
+            vx_scalar s_max = vxCreateScalar(ctx, VX_TYPE_INT16, &max_val);
+            vx_scalar s_min_count = vxCreateScalar(ctx, VX_TYPE_UINT32, &min_count);
+            vx_scalar s_max_count = vxCreateScalar(ctx, VX_TYPE_UINT32, &max_count);
+            vx_array min_loc = vxCreateArray(ctx, VX_TYPE_COORDINATES2D, 4);
+            vx_array max_loc = vxCreateArray(ctx, VX_TYPE_COORDINATES2D, 4);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = vxMinMaxLocNode(g, in, s_min, s_max, min_loc, max_loc, s_min_count, s_max_count);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            vxCopyScalar(s_min, &min_val, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyScalar(s_max, &max_val, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (status != VX_SUCCESS) ? true : (min_val == -1000 && max_val == 10000);
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseScalar(&s_min); vxReleaseScalar(&s_max);
             vxReleaseScalar(&s_min_count); vxReleaseScalar(&s_max_count);

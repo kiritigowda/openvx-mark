@@ -46,7 +46,7 @@
 #
 ################################################################################
 
-find_package(OpenCV 4 QUIET COMPONENTS core imgproc features2d video)
+find_package(OpenCV 4 QUIET COMPONENTS core imgproc features2d video objdetect)
 if(NOT OpenCV_FOUND)
     message(STATUS "opencv-mark: OpenCV 4 not found — skipping companion binary build.")
     message(STATUS "             Install opencv4 (e.g. apt install libopencv-dev / brew install opencv) to enable.")
@@ -69,6 +69,10 @@ set(OPENCV_MARK_SOURCES
     src/benchmarks/cv_misc.cpp
     src/benchmarks/cv_multiscale.cpp
     src/benchmarks/cv_feature.cpp
+    src/benchmarks/cv_extraction.cpp
+    src/benchmarks/cv_tensor.cpp
+    src/benchmarks/cv_pipeline_vision.cpp
+    src/benchmarks/cv_pipeline_feature.cpp
     src/cv_output_dumper.cpp
 )
 

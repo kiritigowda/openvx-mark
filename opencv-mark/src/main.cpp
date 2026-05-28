@@ -40,11 +40,14 @@ void printUsage(const char* prog) {
 
     printf("Benchmark Selection:\n");
     printf("  --vision-parity               Run one apples-to-apples row for each of the\n");
-    printf("                                41 OpenVX vision kernels\n");
-    printf("  --feature-set SET[,SET,...]   Currently only 'vision' is supported\n");
+    printf("                                42 OpenVX vision kernels\n");
+    printf("  --feature-set SET[,SET,...]   Feature sets: vision,enhanced_vision,all,everything\n");
+    printf("                                (default: vision; 'all' = vision + enhanced_vision)\n");
     printf("  --category CAT[,CAT,...]      Filter by category (filters,color,geometric,\n");
-    printf("                                pixelwise,statistical,misc,multiscale,feature)\n");
-    printf("  --kernel NAME[,NAME,...]      Filter by kernel name\n\n");
+    printf("                                pixelwise,statistical,misc,multiscale,feature,\n");
+    printf("                                extraction,tensor,pipeline_vision,pipeline_feature)\n");
+    printf("  --kernel NAME[,NAME,...]      Filter by kernel name\n");
+    printf("  --skip-pipelines              Skip multi-node pipeline benchmarks\n\n");
 
     printf("Resolution:\n");
     printf("  --resolution RES[,RES,...]    VGA,HD,FHD,4K,8K (default: VGA,FHD,4K)\n");
@@ -109,17 +112,25 @@ bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.feature_sets = {"vision"};
             config.kernels = getVisionParityKernels();
         } else if (arg == "--feature-set" && i + 1 < argc) {
-            // PR1 only supports the "vision" feature set on the OpenCV
-            // side; "framework" and "enhanced_vision" are intentionally
-            // not registered yet (see the umbrella PR plan for follow-up).
+            // 'vision' and 'enhanced_vision' have full opencv-mark
+            // coverage. 'framework' (graph dividend, verify cost, etc.)
+            // is intentionally not implementable for OpenCV — OpenCV
+            // has no graph runtime to measure. 'all' = vision +
+            // enhanced_vision; 'everything' is a synonym (no framework
+            // tier to add).
             auto sets = splitComma(argv[++i]);
             config.feature_sets.clear();
             for (const auto& s : sets) {
-                if (s == "vision" || s == "all" || s == "everything") {
+                if (s == "vision") {
                     config.feature_sets.push_back("vision");
-                } else if (s == "enhanced_vision" || s == "framework") {
-                    printf("WARNING: feature-set '%s' has no opencv-mark "
-                           "implementation yet — skipping\n", s.c_str());
+                } else if (s == "enhanced_vision") {
+                    config.feature_sets.push_back("enhanced_vision");
+                } else if (s == "all" || s == "everything") {
+                    config.feature_sets.push_back("vision");
+                    config.feature_sets.push_back("enhanced_vision");
+                } else if (s == "framework") {
+                    printf("WARNING: feature-set 'framework' is OpenVX-only "
+                           "(no graph runtime to measure in OpenCV) — skipping\n");
                 } else {
                     printf("WARNING: unknown feature-set '%s'\n", s.c_str());
                 }
@@ -185,6 +196,8 @@ bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.validate_timing = true;
         } else if (arg == "--dump-outputs" && i + 1 < argc) {
             config.dump_outputs_dir = argv[++i];
+        } else if (arg == "--skip-pipelines") {
+            config.skip_pipelines = true;
         } else {
             printf("Unknown option: %s\n", arg.c_str());
             printUsage(argv[0]);
@@ -314,6 +327,22 @@ int main(int argc, char* argv[]) {
     runner.addCases(opencv_mark::registerCvMiscBenchmarks());
     runner.addCases(opencv_mark::registerCvMultiscaleBenchmarks());
     runner.addCases(opencv_mark::registerCvFeatureBenchmarks());
+    // Enhanced Vision Feature Set categories — extraction (HOG /
+    // HoughLinesP / MatchTemplate / LBP / NonMaxSuppression) and
+    // tensor (the 7 N-D tensor ops). These are filtered to
+    // `enhanced_vision` feature_set by the runner so passing
+    // `--feature-set vision` alone won't run them; passing
+    // `--feature-set all` or `--feature-set enhanced_vision` will.
+    runner.addCases(opencv_mark::registerCvExtractionBenchmarks());
+    runner.addCases(opencv_mark::registerCvTensorBenchmarks());
+
+    // Multi-node pipelines — mirror openvx-mark's `--skip-pipelines`
+    // gate so a user driving both binaries from the same CLI flag set
+    // gets matching benchmark inventories.
+    if (!config.skip_pipelines) {
+        runner.addCases(opencv_mark::registerCvVisionPipelines());
+        runner.addCases(opencv_mark::registerCvFeaturePipelines());
+    }
 
     // Now we know how many kernels are registered; reflect that into
     // the SystemInfo so the JSON's `openvx.num_kernels` field carries

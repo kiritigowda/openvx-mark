@@ -124,6 +124,11 @@ std::vector<OpenCVBenchmarkCase> registerCvStatisticalBenchmarks() {
     }
 
     // MinMaxLoc — U8 in, four scalar outs (min, max, minLoc, maxLoc).
+    //
+    // OpenVX 1.3.1 §3.37 [REQ-0315]: vxMinMaxLocNode accepts U8 or S16
+    // input. cv::minMaxLoc accepts any single-channel depth, so the
+    // S16 case below is a drop-in cv::minMaxLoc call on a CV_16SC1
+    // input.
     {
         OpenCVBenchmarkCase bc;
         bc.name = "MinMaxLoc";
@@ -147,6 +152,34 @@ std::vector<OpenCVBenchmarkCase> registerCvStatisticalBenchmarks() {
             cv::Point mnl, mxl;
             cv::minMaxLoc(in, &mn, &mx, &mnl, &mxl);
             return mn == 50 && mx == 200;
+        };
+        cases.push_back(bc);
+    }
+
+    // MinMaxLoc_S16 — S16 in, four scalar outs.
+    {
+        OpenCVBenchmarkCase bc;
+        bc.name = "MinMaxLoc_S16";
+        bc.category = "statistical";
+        bc.feature_set = "vision";
+        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+            bufs.input = gen.makeS16(w, h);
+            return true;
+        };
+        bc.run_fn = [](CaseBuffers& bufs) {
+            double min_v = 0.0, max_v = 0.0;
+            cv::Point min_loc, max_loc;
+            cv::minMaxLoc(bufs.input, &min_v, &max_v, &min_loc, &max_loc);
+            (void)min_v; (void)max_v; (void)min_loc.x; (void)max_loc.x;
+        };
+        bc.verify_fn = []() -> bool {
+            cv::Mat in(64, 64, CV_16SC1, cv::Scalar(100));
+            in.at<int16_t>(10, 10) = -1000;
+            in.at<int16_t>(20, 20) = 10000;
+            double mn, mx;
+            cv::Point mnl, mxl;
+            cv::minMaxLoc(in, &mn, &mx, &mnl, &mxl);
+            return mn == -1000 && mx == 10000;
         };
         cases.push_back(bc);
     }

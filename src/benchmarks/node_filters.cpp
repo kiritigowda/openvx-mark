@@ -319,6 +319,12 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
     }
 
     // CustomConvolution — U8 input, U8 output, 3x3 convolution kernel
+    //
+    // OpenVX 1.3.1 §3.16: Convolve input is U8-only; output can be U8 or
+    // S16 [REQ-0145, REQ-0147]. The two output paths exercise different
+    // clamping behaviour — for U8 the running sum is clamped to [0,255]
+    // and divided by scale; for S16 the sum is divided by scale with no
+    // clamping. We benchmark both as separate tests.
     {
         BenchmarkCase bc;
         bc.name = "CustomConvolution";
@@ -375,8 +381,73 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
         cases.push_back(bc);
     }
 
+    // CustomConvolution_U8_S16 — U8 input, S16 output, 3x3 convolution kernel
+    {
+        BenchmarkCase bc;
+        bc.name = "CustomConvolution_U8_S16";
+        bc.category = "filters";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_CUSTOM_CONVOLUTION;
+        bc.required_kernels = {VX_KERNEL_CUSTOM_CONVOLUTION};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen,
+                            ResourceTracker& tracker) -> bool {
+            vx_image input = gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8);
+            if (vxGetStatus((vx_reference)input) != VX_SUCCESS) return false;
+            tracker.trackImage(input);
+
+            vx_image output = vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16);
+            if (vxGetStatus((vx_reference)output) != VX_SUCCESS) return false;
+            tracker.trackImage(output);
+
+            vx_convolution conv = gen.createConvolution3x3(ctx);
+            if (vxGetStatus((vx_reference)conv) != VX_SUCCESS) return false;
+            tracker.trackConvolution(conv);
+
+            vx_node node = vxConvolveNode(graph, input, conv, output);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 100);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_convolution conv = vxCreateConvolution(ctx, 3, 3);
+            // Identity kernel with scale=1: sum at center = 100*1 = 100,
+            // and the S16 output stores the un-clamped value directly.
+            vx_int16 kernel[9] = {0, 0, 0, 0, 1, 0, 0, 0, 0};
+            vxCopyConvolutionCoefficients(conv, kernel, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_uint32 scale = 1;
+            vxSetConvolutionAttribute(conv, VX_CONVOLUTION_SCALE, &scale, sizeof(scale));
+            vx_status status = vxuConvolve(ctx, in, conv, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseConvolution(&conv);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImageS16(out, 64, 64);
+            bool ok = !result.empty() && (result[32 * 64 + 32] == 100);
+            vxReleaseConvolution(&conv);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
 #if OPENVX_HAS_1_1
-    // NonLinearFilter — U8 input, U8 output, median mode with mask
+    // NonLinearFilter — U8 input, U8 output, with a {MIN, MAX, MEDIAN}
+    // function selector and a mask matrix.
+    //
+    // Vision Conformance Feature Set: the OpenVX 1.3 spec requires all
+    // three functions (VX_NONLINEAR_FILTER_MIN, _MAX, _MEDIAN) to be
+    // supported. Each filter walks the same window but does different
+    // per-pixel work (constant-time min/max vs. partial sort for median),
+    // so we benchmark them as separate tests.
     {
         BenchmarkCase bc;
         bc.name = "NonLinearFilter";
@@ -427,6 +498,103 @@ std::vector<BenchmarkCase> registerFilterBenchmarks() {
             }
             auto result = verify::readImage(out, 64, 64);
             bool ok = (result[32 * 64 + 32] == 100);
+            vxReleaseMatrix(&mask);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // NonLinearFilter_Min — U8 input, U8 output, MIN function, 3x3 mask
+    {
+        BenchmarkCase bc;
+        bc.name = "NonLinearFilter_Min";
+        bc.category = "filters";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_NON_LINEAR_FILTER;
+        bc.required_kernels = {VX_KERNEL_NON_LINEAR_FILTER};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen,
+                            ResourceTracker& tracker) -> bool {
+            vx_image input  = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_image output = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_matrix mask  = tracker.trackMatrix(gen.createNonLinearMask(ctx));
+            vx_node node = vxNonLinearFilterNode(graph, VX_NONLINEAR_FILTER_MIN,
+                                                 input, mask, output);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // Center pixel low, surroundings high → MIN should pull center down
+            std::vector<uint8_t> a(64 * 64, 200);
+            a[32 * 64 + 32] = 50;
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_uint8 mask_data[9];
+            for (int i = 0; i < 9; i++) mask_data[i] = 255;
+            vx_matrix mask = vxCreateMatrix(ctx, VX_TYPE_UINT8, 3, 3);
+            vxCopyMatrix(mask, mask_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_status status = vxuNonLinearFilter(ctx, VX_NONLINEAR_FILTER_MIN, in, mask, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseMatrix(&mask);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            // Window over (32,32) includes the value-50 pixel → output is 50.
+            bool ok = (result[32 * 64 + 32] == 50);
+            vxReleaseMatrix(&mask);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // NonLinearFilter_Max — U8 input, U8 output, MAX function, 3x3 mask
+    {
+        BenchmarkCase bc;
+        bc.name = "NonLinearFilter_Max";
+        bc.category = "filters";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_NON_LINEAR_FILTER;
+        bc.required_kernels = {VX_KERNEL_NON_LINEAR_FILTER};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen,
+                            ResourceTracker& tracker) -> bool {
+            vx_image input  = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_image output = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_matrix mask  = tracker.trackMatrix(gen.createNonLinearMask(ctx));
+            vx_node node = vxNonLinearFilterNode(graph, VX_NONLINEAR_FILTER_MAX,
+                                                 input, mask, output);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // Center pixel high, surroundings low → MAX should pull center up
+            std::vector<uint8_t> a(64 * 64, 50);
+            a[32 * 64 + 32] = 200;
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_uint8 mask_data[9];
+            for (int i = 0; i < 9; i++) mask_data[i] = 255;
+            vx_matrix mask = vxCreateMatrix(ctx, VX_TYPE_UINT8, 3, 3);
+            vxCopyMatrix(mask, mask_data, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_status status = vxuNonLinearFilter(ctx, VX_NONLINEAR_FILTER_MAX, in, mask, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseMatrix(&mask);
+                vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = (result[32 * 64 + 32] == 200);
             vxReleaseMatrix(&mask);
             vxReleaseImage(&in); vxReleaseImage(&out);
             return ok;

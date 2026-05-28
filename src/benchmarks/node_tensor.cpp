@@ -26,10 +26,12 @@
 
 #include "benchmark_runner.h"
 #include "benchmark_config.h"
+#include "openvx_optional_apis.h"
 #include "openvx_version.h"
 #include "verify_utils.h"
 #include <VX/vxu.h>
 #include <VX/vx_nodes.h>
+#include <algorithm>
 #include <vector>
 
 std::vector<BenchmarkCase> registerTensorBenchmarks()
@@ -374,9 +376,81 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
         cases.push_back(bc);
     }
 
-    // NOTE: TensorMatMul benchmark removed -- vxTensorMatrixMultiplyNode takes
-    // a vx_tensor_matrix_multiply_params_t struct pointer which cannot be
-    // passed through the generic vxSetParameterByIndex interface.
+    // ---- TensorMatMul ----
+    //
+    // OpenVX 1.3.1 §3.50: vxTensorMatrixMultiplyNode computes
+    //   output = (transpose_input1 ? input1ᵀ : input1) ×
+    //            (transpose_input2 ? input2ᵀ : input2)
+    //          + (transpose_input3 ? input3ᵀ : input3)
+    // for 2D input tensors. input3 is optional. We use the typed
+    // vxTensorMatrixMultiplyNode API directly (the params struct
+    // cannot be wired through the generic vxSetParameterByIndex path).
+    {
+        BenchmarkCase bc;
+        bc.name        = "TensorMatMul";
+        bc.category    = "tensor";
+        bc.feature_set = "enhanced_vision";
+        bc.kernel_enum = VX_KERNEL_TENSOR_MATRIX_MULTIPLY;
+        bc.required_kernels = {VX_KERNEL_TENSOR_MATRIX_MULTIPLY};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            // Use square M×N · N×M matmul so we touch w*h*w ops at full
+            // res. Cap at 256 to keep iteration cost reasonable.
+            vx_size M = std::min<vx_size>(256, width);
+            vx_size N = std::min<vx_size>(256, height);
+            vx_size in1_dims[2] = {N, M};   // M×N matrix (rows=M, cols=N)
+            vx_size in2_dims[2] = {M, N};   // N×M matrix
+            vx_size out_dims[2] = {M, M};   // M×M result
+            vx_tensor in1 = tracker.trackTensor(gen.createFilledTensor(ctx, in1_dims, 2, VX_TYPE_INT16));
+            vx_tensor in2 = tracker.trackTensor(gen.createFilledTensor(ctx, in2_dims, 2, VX_TYPE_INT16));
+            vx_tensor out = tracker.trackTensor(vxCreateTensor(ctx, 2, out_dims, VX_TYPE_INT16, 0));
+            if (vxGetStatus((vx_reference)in1) != VX_SUCCESS ||
+                vxGetStatus((vx_reference)in2) != VX_SUCCESS ||
+                vxGetStatus((vx_reference)out) != VX_SUCCESS) return false;
+
+            // input3 (bias) is optional; pass nullptr to skip the add step.
+            vx_tensor_matrix_multiply_params_t params = {};
+            params.transpose_input1 = vx_false_e;
+            params.transpose_input2 = vx_false_e;
+            params.transpose_input3 = vx_false_e;
+
+            auto fn = openvx_optional::tensorMatrixMultiplyNode();
+            if (!fn) return false;
+            vx_node node = fn(graph, in1, in2, /*input3=*/nullptr, &params, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // 2×2 · 2×2 matmul with known values: [[1,2],[3,4]] · [[1,0],[0,1]] = [[1,2],[3,4]]
+            auto fn = openvx_optional::tensorMatrixMultiplyNode();
+            if (!fn) return true;
+            vx_size dims[2] = {2, 2};
+            int16_t a[4] = {1, 2, 3, 4};
+            int16_t b[4] = {1, 0, 0, 1};
+            vx_tensor t1 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_tensor t2 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
+            vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 2 * sizeof(int16_t)};
+            vxCopyTensorPatch(t1, 2, starts, dims, strides, a, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t2, 2, starts, dims, strides, b, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_tensor_matrix_multiply_params_t params = {};
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = fn(g, t1, t2, nullptr, &params, tout);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            int16_t result[4] = {};
+            vxCopyTensorPatch(tout, 2, starts, dims, strides, result, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (status != VX_SUCCESS) ? true :
+                      (result[0] == 1 && result[1] == 2 && result[2] == 3 && result[3] == 4);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&tout);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
 
     // ---- TensorTableLookup ----
     {

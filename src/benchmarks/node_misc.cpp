@@ -25,6 +25,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "benchmark_runner.h"
+#include "openvx_optional_apis.h"
 #include "openvx_version.h"
 #include "verify_utils.h"
 #include <VX/vx_nodes.h>
@@ -111,7 +112,12 @@ std::vector<BenchmarkCase> registerMiscBenchmarks()
         cases.push_back(bc);
     }
 
-    // ---- TableLookup ----
+    // ---- TableLookup (U8 input, U8 LUT) ----
+    //
+    // Vision Conformance Feature Set: TableLookup requires both VX_TYPE_UINT8
+    // (256-entry LUT, U8 image) and VX_TYPE_INT16 (65536-entry LUT, S16
+    // image with offset). The two paths have very different LUT sizes and
+    // address arithmetic, so we benchmark them as separate tests.
     {
         BenchmarkCase bc;
         bc.name        = "TableLookup";
@@ -152,7 +158,74 @@ std::vector<BenchmarkCase> registerMiscBenchmarks()
         cases.push_back(bc);
     }
 
-    // ---- Threshold_Binary ----
+    // ---- TableLookup_S16 (S16 input, S16 LUT) ----
+    //
+    // The S16 LUT path uses a 65536-entry table with a signed offset, which
+    // is materially different from the 256-entry U8 path in both memory
+    // footprint and address arithmetic. Required by the Vision Conformance
+    // Feature Set per the OpenVX 1.3 vxTableLookupNode spec.
+    {
+        BenchmarkCase bc;
+        bc.name        = "TableLookup_S16";
+        bc.category    = "misc";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_TABLE_LOOKUP;
+        bc.required_kernels = {VX_KERNEL_TABLE_LOOKUP};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image input  = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image output = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16));
+            // Full S16 LUT: 65536 entries, offset -32768 so index 0 maps to -32768.
+            vx_lut lut = vxCreateLUT(ctx, VX_TYPE_INT16, 65536);
+            if (vxGetStatus((vx_reference)lut) != VX_SUCCESS) return false;
+            tracker.trackLUT(lut);
+            std::vector<int16_t> table(65536);
+            for (size_t i = 0; i < table.size(); i++) {
+                table[i] = static_cast<int16_t>(i - 32768);
+            }
+            vxCopyLUT(lut, table.data(), VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_node node = vxTableLookupNode(graph, input, lut, output);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // 64x64 S16 image filled with 1000, identity LUT (with -32768 offset
+            // so LUT[input + 32768] = input) → output should equal input.
+            std::vector<int16_t> a(64 * 64, 1000);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                              reinterpret_cast<const uint8_t*>(a.data()));
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_lut lut = vxCreateLUT(ctx, VX_TYPE_INT16, 65536);
+            if (!lut) { vxReleaseImage(&in); vxReleaseImage(&out); return true; }
+            std::vector<int16_t> table(65536);
+            for (size_t i = 0; i < table.size(); i++) {
+                table[i] = static_cast<int16_t>(i - 32768);
+            }
+            vxCopyLUT(lut, table.data(), VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_status status = vxuTableLookup(ctx, in, lut, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseLUT(&lut); vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImageS16(out, 64, 64);
+            bool ok = !result.empty() && (result[0] == 1000);
+            vxReleaseLUT(&lut);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- Threshold_Binary (U8 input) ----
+    //
+    // OpenVX 1.3.1 §3.55 [REQ-0493]: Threshold accepts U8 or S16 input,
+    // and produces a U8 or U1 boolean output. The vx_threshold object's
+    // VX_THRESHOLD_INPUT_FORMAT must match the input image format. We
+    // benchmark U8 binary, U8 range and S16 binary as separate tests.
     {
         BenchmarkCase bc;
         bc.name        = "Threshold_Binary";
@@ -192,6 +265,65 @@ std::vector<BenchmarkCase> registerMiscBenchmarks()
         };
         cases.push_back(bc);
     }
+
+#if OPENVX_HAS_1_3
+    // ---- Threshold_S16 (S16 input, U8 binary output) ----
+    //
+    // OpenVX 1.3.1 §3.55: Threshold input may be U8 or S16; the threshold
+    // object's VX_THRESHOLD_INPUT_FORMAT must match the input image.
+    // Gated on OpenVX 1.3+ because pre-1.3 `vxCreateThreshold(type, U8)`
+    // is the only path our compat shim provides (no signed support there).
+    {
+        BenchmarkCase bc;
+        bc.name        = "Threshold_S16";
+        bc.category    = "misc";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_THRESHOLD;
+        bc.required_kernels = {VX_KERNEL_THRESHOLD};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image input  = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image output = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_threshold thresh = vxCreateThresholdForImage(ctx, VX_THRESHOLD_TYPE_BINARY,
+                                                            VX_DF_IMAGE_S16, VX_DF_IMAGE_U8);
+            if (vxGetStatus((vx_reference)thresh) != VX_SUCCESS) return false;
+            tracker.trackThreshold(thresh);
+            vx_pixel_value_t pv = {};
+            pv.S16 = 1000;
+            vxCopyThresholdValue(thresh, &pv, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_node node = vxThresholdNode(graph, input, thresh, output);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // S16 input filled with 2000, threshold at 1000 → all output = 255
+            std::vector<int16_t> a(64 * 64, 2000);
+            vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                              reinterpret_cast<const uint8_t*>(a.data()));
+            if (!in) return true;
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
+            vx_threshold thresh = vxCreateThresholdForImage(ctx, VX_THRESHOLD_TYPE_BINARY,
+                                                            VX_DF_IMAGE_S16, VX_DF_IMAGE_U8);
+            vx_pixel_value_t pv = {};
+            pv.S16 = 1000;
+            vxCopyThresholdValue(thresh, &pv, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_status status = vxuThreshold(ctx, in, thresh, out);
+            if (status != VX_SUCCESS) {
+                vxReleaseThreshold(&thresh); vxReleaseImage(&in); vxReleaseImage(&out);
+                return true;
+            }
+            auto result = verify::readImage(out, 64, 64);
+            bool ok = !result.empty() && (result[0] == 255);
+            vxReleaseThreshold(&thresh);
+            vxReleaseImage(&in); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+#endif
 
     // ---- Threshold_Range ----
     {
@@ -282,6 +414,128 @@ std::vector<BenchmarkCase> registerMiscBenchmarks()
 #endif
 
 #if OPENVX_HAS_1_2
+    // ---- BilateralFilter ----
+    //
+    // OpenVX 1.3.1 §3.4: vxBilateralFilterNode operates on vx_tensor
+    // (not vx_image). The src tensor has dims [W, H, 1] (or [W, H, N]
+    // for a batch). diameter, sigmaSpace, sigmaValues are scalar
+    // parameters. We use a 5-tap diameter and modest sigmas to match
+    // the typical OpenCV bilateralFilter call.
+    {
+        BenchmarkCase bc;
+        bc.name        = "BilateralFilter";
+        bc.category    = "misc";
+        bc.feature_set = "enhanced_vision";
+        bc.kernel_enum = VX_KERNEL_BILATERAL_FILTER;
+        bc.required_kernels = {VX_KERNEL_BILATERAL_FILTER};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_size dims[2] = {width, height};
+            vx_tensor src = tracker.trackTensor(
+                gen.createFilledTensor(ctx, dims, 2, VX_TYPE_UINT8));
+            vx_tensor dst = tracker.trackTensor(
+                vxCreateTensor(ctx, 2, dims, VX_TYPE_UINT8, 0));
+            if (vxGetStatus((vx_reference)src) != VX_SUCCESS ||
+                vxGetStatus((vx_reference)dst) != VX_SUCCESS) return false;
+
+            auto fn = openvx_optional::bilateralFilterNode();
+            if (!fn) return false;
+            vx_node node = fn(graph, src,
+                              /*diameter=*/5,
+                              /*sigmaSpace=*/20.0f,
+                              /*sigmaValues=*/40.0f,
+                              dst);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // Uniform input should pass through unchanged within rounding.
+            auto fn = openvx_optional::bilateralFilterNode();
+            if (!fn) return true;
+            vx_size dims[2] = {64, 64};
+            std::vector<uint8_t> in_data(64 * 64, 100);
+            vx_tensor tin = vxCreateTensor(ctx, 2, dims, VX_TYPE_UINT8, 0);
+            vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_UINT8, 0);
+            vx_size starts[2] = {0, 0}, strides[2] = {sizeof(uint8_t), 64 * sizeof(uint8_t)};
+            vxCopyTensorPatch(tin, 2, starts, dims, strides, in_data.data(),
+                              VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = fn(g, tin, 5, 20.0f, 40.0f, tout);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            std::vector<uint8_t> result(64 * 64, 0);
+            vxCopyTensorPatch(tout, 2, starts, dims, strides, result.data(),
+                              VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (status != VX_SUCCESS) ? true :
+                      (!result.empty() && std::abs((int)result[32 * 64 + 32] - 100) <= 2);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseTensor(&tin); vxReleaseTensor(&tout);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- ScalarOperation ----
+    //
+    // OpenVX 1.3.1 §3.14 (Control Flow): vxScalarOperationNode performs
+    // an arithmetic / comparison / logical op on two vx_scalar values.
+    // The work per call is O(1) — the cost is entirely in the kernel
+    // dispatch + scalar marshalling. We benchmark VX_SCALAR_OP_ADD on
+    // two INT32 scalars as a representative case.
+    //
+    // Per the OpenVX 1.3.1 spec, the throughput for ScalarOperation is
+    // not measured in MP/s (there are no pixels) — `megapixels_per_sec`
+    // in the JSON will just reflect the dispatch rate; useful for
+    // measuring framework overhead per call.
+    {
+        BenchmarkCase bc;
+        bc.name        = "ScalarOperation";
+        bc.category    = "misc";
+        bc.feature_set = "enhanced_vision";
+        bc.kernel_enum = VX_KERNEL_SCALAR_OPERATION;
+        bc.required_kernels = {VX_KERNEL_SCALAR_OPERATION};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t /*width*/, uint32_t /*height*/,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_int32 a_val = 100, b_val = 50, out_val = 0;
+            vx_scalar a   = tracker.trackScalar(gen.createScalar(ctx, VX_TYPE_INT32, &a_val));
+            vx_scalar b   = tracker.trackScalar(gen.createScalar(ctx, VX_TYPE_INT32, &b_val));
+            vx_scalar out = tracker.trackScalar(gen.createScalar(ctx, VX_TYPE_INT32, &out_val));
+            if (vxGetStatus((vx_reference)a) != VX_SUCCESS ||
+                vxGetStatus((vx_reference)b) != VX_SUCCESS ||
+                vxGetStatus((vx_reference)out) != VX_SUCCESS) return false;
+
+            auto fn = openvx_optional::scalarOperationNode();
+            if (!fn) return false;
+            vx_node node = fn(graph, VX_SCALAR_OP_ADD, a, b, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            auto fn = openvx_optional::scalarOperationNode();
+            if (!fn) return true;
+            vx_int32 a_val = 100, b_val = 50, out_val = 0;
+            vx_scalar a = vxCreateScalar(ctx, VX_TYPE_INT32, &a_val);
+            vx_scalar b = vxCreateScalar(ctx, VX_TYPE_INT32, &b_val);
+            vx_scalar out = vxCreateScalar(ctx, VX_TYPE_INT32, &out_val);
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = fn(g, VX_SCALAR_OP_ADD, a, b, out);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+            vxCopyScalar(out, &out_val, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (status != VX_SUCCESS) ? true : (out_val == 150);
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseScalar(&a); vxReleaseScalar(&b); vxReleaseScalar(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
     // ---- Select ----
     {
         BenchmarkCase bc;

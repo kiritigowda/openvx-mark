@@ -72,6 +72,40 @@ cmake -DOPENVX_INCLUDES=/path/to/OpenVX-sample-impl/include \
 cmake --build .
 ```
 
+### rustVX (Rust OpenVX 1.3.1 — CTS-conformant for Vision + Enhanced Vision)
+
+[**rustVX**](https://github.com/kiritigowda/rustVX) is a memory-safe Rust implementation of OpenVX 1.3.1 that passes the full Khronos CTS for *both* the Vision (5923/5923) and Enhanced Vision (1235/1235) profiles. Pointing openvx-mark at rustVX gives you real measured numbers on every one of the 19 enhanced_vision kernels — useful when comparing against an implementation like AMD MIVisionX that only ships the vision profile, or against OpenCV which exposes the same algorithms outside any OpenVX runtime.
+
+CMake recognises rustVX's `libopenvx_ffi.{so,dylib,dll}` natively (no symlinks required):
+
+```bash
+# One-shot helper that clones, builds rustVX with the SIMD/parallel
+# features, and prints the cmake invocation you need:
+scripts/build_rustvx.sh
+
+# Then:
+mkdir build-rustvx && cd build-rustvx
+cmake -DOPENVX_INCLUDES=/abs/path/to/rustVX/include \
+      -DOPENVX_LIB_DIR=/abs/path/to/rustVX/target/release ..
+cmake --build .
+```
+
+### 3-way comparison: AMD MIVisionX vs rustVX vs OpenCV
+
+The headline use case: side-by-side numbers for every kernel across an OpenVX vision-only impl, a CTS-conformant full-profile impl, and the OpenCV baseline.
+
+```bash
+scripts/compare_three_way.sh --resolution VGA,FHD --iterations 100
+```
+
+Produces under `build/comparison-three-way/`:
+
+- `amd-mivisionx.json`, `rustvx.json`, `opencv.json` — raw per-impl reports
+- `comparison-three-way.{md,csv}` — combined N-way table (one row per `(kernel, mode, resolution)`, one column-pair per impl)
+- `comparison-amd-vs-rustvx.{md,csv}`, `comparison-amd-vs-opencv.{md,csv}`, `comparison-rustvx-vs-opencv.{md,csv}` — drill-down 2-way reports with conformance, scores, per-category geomean, and win/loss counts
+
+The 3-way table makes the Vision-vs-Enhanced-Vision asymmetry obvious: AMD entries show `N/A` on enhanced_vision rows (impl gap), while rustVX and OpenCV both have measured numbers. On vision rows all three columns are populated, giving a true apples-to-apples comparison of "Rust OpenVX vs C++ OpenVX vs C++ OpenCV" on the same hardware.
+
 ## Usage
 
 ```bash

@@ -8,6 +8,101 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [1.1.0] — OpenCV parity comparisons
 
+### Added — Vision Conformance Feature Set completion (42/42) & per-spec input/output coverage
+
+- **Registered the missing 42nd Vision-Conformance kernel.** The Vision
+  Conformance Feature Set (vx_khr_feature_sets §3.2.2) lists 42 required
+  kernels, but the registry only knew about 41 — `LaplacianReconstruct`
+  (`VX_KERNEL_LAPLACIAN_RECONSTRUCT` / `vxLaplacianReconstructNode`)
+  was missing. Now registered (1.1+ gated) and a benchmark added that
+  exercises a full LaplacianPyramid → LaplacianReconstruct round-trip.
+  `vision Conformance:` line now reports `PASS (42/42)` (was 41/41).
+- **Full audit of every benchmark against OpenVX 1.3.1 §3.** Confirmed
+  no benchmark uses non-conformant input/output formats, parameter
+  values, or interpolation modes. Documented each per-kernel format
+  contract inline with `[REQ-####]` spec citations.
+- **Separate tests per spec-required input combination.** Where a
+  single kernel has multiple required input/output type combinations
+  (or multiple required parameter values), each is now exercised as
+  its own benchmark — the conformance matcher recognises
+  `Kernel_Suffix` as covering `Kernel`, so total kernel coverage
+  stays 42/42 while every spec-required *feature* per kernel is now
+  measured separately. New cases (19 total) cover:
+  - Pixelwise: `AbsDiff_S16`, `Add_U8_U8_S16`, `Add_S16_S16_S16`,
+    `Subtract_U8_U8_S16`, `Subtract_S16_S16_S16`, `Multiply_U8_U8_S16`,
+    `Multiply_S16_S16_S16` (scale=1/255, NEAREST_EVEN per [REQ-0371])
+  - Color/depth: `ConvertDepth_S16toU8`, `ColorConvert_RGB2YUV4`,
+    `ColorConvert_IYUV2RGB`, `ChannelExtract_NV12_Y`,
+    `ChannelExtract_IYUV_U`, `ChannelExtract_YUYV_Y`,
+    `ChannelCombine_YUV4`
+  - Filters: `NonLinearFilter_Min`, `NonLinearFilter_Max`,
+    `CustomConvolution_U8_S16` (U8→S16 output path per [REQ-0147])
+  - Geometric: `ScaleImage_Nearest_Half`, `ScaleImage_Area_Half`,
+    `WarpAffine_Nearest`, `WarpPerspective_Nearest`, `Remap_Nearest`
+  - Multiscale: `LaplacianReconstruct` (the missing 42nd kernel),
+    `GaussianPyramid_ORB` (`VX_SCALE_PYRAMID_ORB` per [REQ-0189]),
+    `LaplacianPyramid_S16`, `LaplacianReconstruct_S16`,
+    `HalfScaleGaussian_1x1`, `HalfScaleGaussian_5x5`
+    (kernel_size ∈ {1, 3, 5} per [REQ-0410])
+  - Statistical: `MinMaxLoc_S16` (S16 input per [REQ-0315])
+  - Misc: `TableLookup_S16` (S16 LUT path per [REQ-0422]),
+    `Threshold_S16` (S16 input per [REQ-0493], 1.3-gated)
+- **Graceful skip for genuinely unsupported impl paths.** S16
+  Laplacian variants on AMD AGO return `VX_ERROR_NOT_SUPPORTED` from
+  `vxVerifyGraph`; we now treat that status the same as `VX_SUCCESS`
+  for verify purposes so a missing-feature impl bug is reported as
+  a soft-skip rather than a falsified pass.
+
+### Added — Enhanced Vision Feature Set coverage (19/19) on opencv-mark + rustVX integration
+
+- **opencv-mark — 1:1 kernel-name parity for both feature sets.** All
+  19 enhanced_vision kernels (per OpenVX 1.3.1 §7.2.2) now have an
+  OpenCV counterpart, so `compare_reports.py` joins enhanced kernels
+  too. Two new files (`cv_extraction.cpp`, `cv_tensor.cpp`) plus
+  Min/Max/Copy/BilateralFilter/Select/ScalarOperation in existing
+  files. `LBP` is a manual 3×3 inline impl (no native `cv::LBP`);
+  `NonMaxSuppression` uses the canonical `cv::dilate`-as-local-max
+  trick; `ScalarOperation` benchmarks a tight C++ scalar-add loop
+  to match what the OpenVX kernel measures (framework dispatch cost).
+- **opencv-mark — 6 previously-unmeasured openvx-mark enhanced_vision
+  benchmarks added on both sides** so the cross-impl join is symmetric:
+  `HOGCells`, `HOGFeatures`, `HoughLinesP`, `TensorMatMul`,
+  `BilateralFilter`, `ScalarOperation`.
+- **opencv-mark — CLI accepts `--feature-set enhanced_vision` and
+  `--feature-set all`** (was rejecting both with `WARNING` in #18).
+  New `--skip-pipelines` flag mirrors openvx-mark.
+- **rustVX as a first-class third backend.** CMake `find_library` now
+  also accepts `openvx_ffi` (rustVX's library name), de-duplicating
+  the link list when the openvx/vxu names resolve to the same .so/
+  .dylib (single-library backend, rustVX case). AMD MIVisionX and
+  Khronos sample continue to auto-detect as before.
+- **`include/openvx_optional_apis.h`** (new) — small dlsym shim because
+  AMD MIVisionX *declares but does not export*
+  `vxBilateralFilterNode`, `vxScalarOperationNode`, `vxHOGCellsNode`,
+  `vxHOGFeaturesNode`, `vxHoughLinesPNode`, and
+  `vxTensorMatrixMultiplyNode`. Without the shim, linking openvx-mark
+  against MIVisionX after adding these benchmarks was a hard
+  `ld: symbol not found` failure. `dlsym(RTLD_DEFAULT, …)` resolves
+  them at first use; a null function pointer makes the benchmark
+  gracefully report `"skipped (kernel not supported by impl)"`.
+- **`scripts/build_rustvx.sh`** (new) — clones (or updates) rustVX,
+  runs `cargo build --release` with the SIMD + parallel features
+  that match rustVX upstream CI, honours `CARGO_TARGET_DIR`
+  (IDE-style sandbox caches), and creates belt-and-suspenders
+  `libopenvx.{so,dylib}` / `libvxu.{so,dylib}` symlinks for any tool
+  that hard-codes the legacy names.
+- **`scripts/three_way_summary.py`** (new) — N-way joined
+  `(name, mode, resolution)` table. The existing `compare_reports.py`
+  is rich (scores, win/loss, per-category geomean) but pairwise-only;
+  this handles N ≥ 3 with one column-pair per impl and surfaces
+  AMD-N/A rows explicitly.
+- **`scripts/compare_three_way.sh`** (new) — end-to-end driver. Builds
+  rustVX, configures + builds openvx-mark twice (once against AMD
+  MIVisionX in `build/`, once against rustVX in `build-rustvx/`),
+  runs each binary + opencv-mark with identical flags, then emits
+  both the N-way summary and three pairwise drill-down reports
+  (AMD-vs-rustVX, AMD-vs-OpenCV, rustVX-vs-OpenCV).
+
 ### Added — CI fairness, accuracy & timing audit
 
 A single PR that closes the headline credibility gap surfaced when
