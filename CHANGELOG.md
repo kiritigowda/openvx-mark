@@ -41,9 +41,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
     `WarpAffine_Nearest`, `WarpPerspective_Nearest`, `Remap_Nearest`
   - Multiscale: `LaplacianReconstruct` (the missing 42nd kernel),
     `GaussianPyramid_ORB` (`VX_SCALE_PYRAMID_ORB` per [REQ-0189]),
-    `LaplacianPyramid_S16`, `LaplacianReconstruct_S16`,
     `HalfScaleGaussian_1x1`, `HalfScaleGaussian_5x5`
-    (kernel_size ∈ {1, 3, 5} per [REQ-0410])
+    (kernel_size ∈ {1, 3, 5} per [REQ-0410]).
+    S16 Laplacian{Pyramid,Reconstruct} variants are intentionally
+    NOT registered — §3.30 [REQ-0265] permits S16 input but §3.30's
+    algorithm description requires an internal `vxGaussianPyramid`
+    step that §3.23 [REQ-0191] restricts to U8 input. Every
+    conformant impl rejects S16 LaplacianPyramid with
+    `VX_ERROR_FORMAT_NOT_SUPPORTED` at verify time.
   - Statistical: `MinMaxLoc_S16` (S16 input per [REQ-0315])
   - Misc: `TableLookup_S16` (S16 LUT path per [REQ-0422]),
     `Threshold_S16` (S16 input per [REQ-0493], 1.3-gated)

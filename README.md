@@ -363,7 +363,7 @@ openvx-mark/
 │       ├── node_color.cpp          # ColorConvert/ChannelExtract/ChannelCombine/ConvertDepth + format variants
 │       ├── node_geometric.cpp      # ScaleImage/WarpAffine/WarpPerspective/Remap + Nearest/Area variants
 │       ├── node_statistical.cpp    # Histogram/EqualizeHist/MeanStdDev/MinMaxLoc/IntegralImage
-│       ├── node_multiscale.cpp     # GaussianPyramid (Half/ORB), LaplacianPyramid (U8/S16), LaplacianReconstruct, HalfScaleGaussian (1/3/5)
+│       ├── node_multiscale.cpp     # GaussianPyramid (Half/ORB), LaplacianPyramid, LaplacianReconstruct, HalfScaleGaussian (1/3/5)
 │       ├── node_feature.cpp        # Canny/Harris/Fast/OpticalFlowPyrLK
 │       ├── node_extraction.cpp     # MatchTemplate/LBP/NonMaxSuppression/HOGCells/HOGFeatures/HoughLinesP
 │       ├── node_tensor.cpp         # TensorAdd/Sub/Mul/Transpose/ConvertDepth/MatMul/TableLookup
