@@ -280,9 +280,25 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             constexpr vx_int32 BLOCK_STRIDE = 8;
             constexpr vx_int32 WIN = 64;
             constexpr vx_int32 WIN_STRIDE = 8;
+
+            // Cap effective HOG dimensions independent of the bench
+            // resolution flag. The HOG features tensor sizes as
+            //   cells_per_block * BINS * blocks_per_win * win_per_row * win_per_col
+            // which grows ~O(w·h). At full FHD that's ~100 MB of
+            // int16; at 4K ~420 MB — large enough to OOM CI runners
+            // and to dwarf the actual kernel cost with allocator
+            // pressure. 1024x768 is the classic HOG-pedestrian-detect
+            // resolution and gives a meaningful ~36 MB tensor while
+            // staying inside every realistic memory budget. The kernel's
+            // per-window cost is what we're measuring, so capping the
+            // window count doesn't change what the comparison answers.
+            constexpr uint32_t MAX_HOG_W = 1024;
+            constexpr uint32_t MAX_HOG_H = 768;
+            uint32_t eff_w = std::min<uint32_t>(width,  MAX_HOG_W);
+            uint32_t eff_h = std::min<uint32_t>(height, MAX_HOG_H);
             // Coerce dimensions so window fits with at least one slide.
-            uint32_t w = std::max<uint32_t>(WIN + WIN_STRIDE, (width  / CELL) * CELL);
-            uint32_t h = std::max<uint32_t>(WIN + WIN_STRIDE, (height / CELL) * CELL);
+            uint32_t w = std::max<uint32_t>(WIN + WIN_STRIDE, (eff_w / CELL) * CELL);
+            uint32_t h = std::max<uint32_t>(WIN + WIN_STRIDE, (eff_h / CELL) * CELL);
 
             vx_image input = tracker.trackImage(
                 gen.createFilledImage(ctx, w, h, VX_DF_IMAGE_U8));

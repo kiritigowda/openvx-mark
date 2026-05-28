@@ -40,6 +40,7 @@
 // data point and one of the umbrella PR's stated goals.
 
 #include "opencv_runner.h"
+#include <memory>
 #include <opencv2/imgproc.hpp>
 #include <vector>
 
@@ -106,31 +107,43 @@ std::vector<OpenCVBenchmarkCase> registerCvVisionPipelines() {
     }
 
     // 2. SobelMagnitudePhase: Sobel3x3 → (Magnitude + Phase)
+    //
+    // cv::magnitude and cv::phase require F32 inputs while cv::Sobel
+    // here produces S16. The previous shape allocated the F32 dx/dy
+    // and phase Mats per run_fn iteration via convertTo — at FHD that
+    // is ~24 MB of float storage allocated and freed every iteration.
+    // Drive Sobel directly into CV_32F (it accepts S16 OR F32 dst
+    // dtypes) and preallocate the phase scratch in shared state.
     {
+        struct SobelMagPhaseState {
+            cv::Mat phase;  // preallocated; we don't expose phase but
+                            // cv::phase still needs a sized dst.
+        };
+        auto state = std::make_shared<SobelMagPhaseState>();
+
         OpenCVBenchmarkCase bc;
         bc.name = "SobelMagnitudePhase";
         bc.category = "pipeline_vision";
         bc.feature_set = "vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+        bc.setup_fn = [state](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
             bufs.input = gen.makeU8(w, h);
-            // input_extra is dx (S16); output_extra is dy (S16); output is the merged
-            // magnitude+phase via cv::cartToPolar (we write magnitude into output).
-            bufs.input_extra.create(static_cast<int>(h), static_cast<int>(w), CV_16SC1);
-            bufs.output_extra.create(static_cast<int>(h), static_cast<int>(w), CV_16SC1);
+            // input_extra = dx (F32 directly — was S16+convertTo before);
+            // output_extra = dy (F32);  output = magnitude (F32).
+            bufs.input_extra.create(static_cast<int>(h), static_cast<int>(w), CV_32FC1);
+            bufs.output_extra.create(static_cast<int>(h), static_cast<int>(w), CV_32FC1);
             bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_32FC1);
+            state->phase.create(static_cast<int>(h), static_cast<int>(w), CV_32FC1);
             return true;
         };
-        bc.run_fn = [](CaseBuffers& bufs) {
-            // Sobel dx, dy
-            cv::Sobel(bufs.input, bufs.input_extra,  CV_16S, 1, 0, 3, 1, 0, cv::BORDER_REPLICATE);
-            cv::Sobel(bufs.input, bufs.output_extra, CV_16S, 0, 1, 3, 1, 0, cv::BORDER_REPLICATE);
-            // cv::magnitude / cv::phase need F32 inputs — convert dx/dy.
-            cv::Mat dxf, dyf, phase;
-            bufs.input_extra.convertTo(dxf, CV_32F);
-            bufs.output_extra.convertTo(dyf, CV_32F);
-            cv::magnitude(dxf, dyf, bufs.output);
-            cv::phase(dxf, dyf, phase, /*angleInDegrees=*/false);
-            (void)phase.cols;
+        bc.run_fn = [state](CaseBuffers& bufs) {
+            // Sobel dx, dy — emit CV_32F directly so we skip the
+            // per-iter S16→F32 convertTo (and its allocations).
+            cv::Sobel(bufs.input, bufs.input_extra,  CV_32F, 1, 0, 3, 1, 0, cv::BORDER_REPLICATE);
+            cv::Sobel(bufs.input, bufs.output_extra, CV_32F, 0, 1, 3, 1, 0, cv::BORDER_REPLICATE);
+            // magnitude + phase write into the preallocated dst Mats.
+            cv::magnitude(bufs.input_extra, bufs.output_extra, bufs.output);
+            cv::phase(bufs.input_extra, bufs.output_extra, state->phase,
+                      /*angleInDegrees=*/false);
         };
         bc.verify_fn = []() -> bool {
             cv::Mat in(64, 64, CV_8UC1, cv::Scalar(100));

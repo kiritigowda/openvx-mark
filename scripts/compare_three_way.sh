@@ -121,11 +121,22 @@ if [[ $SKIP_RUSTVX_BUILD -eq 0 ]]; then
     "$SCRIPT_DIR/build_rustvx.sh" --src "$RUSTVX_SRC"
 fi
 
-RUSTVX_LIB_DIR="$RUSTVX_SRC/target/release"
 RUSTVX_INCLUDE="$RUSTVX_SRC/include"
+
+# Honour CARGO_TARGET_DIR the same way build_rustvx.sh does — IDEs and
+# CI caches frequently redirect cargo output to a shared tree, in which
+# case "<src>/target/release" doesn't exist at all and the script
+# would fail with a misleading "rustVX library not found" message.
+# Mirror the exact resolution logic so the two scripts stay in lockstep.
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+    RUSTVX_LIB_DIR="$CARGO_TARGET_DIR/release"
+else
+    RUSTVX_LIB_DIR="$RUSTVX_SRC/target/release"
+fi
 
 if [[ ! -f "$RUSTVX_LIB_DIR/libopenvx_ffi.$LIB_EXT" ]]; then
     echo "ERROR: rustVX library not found at $RUSTVX_LIB_DIR/libopenvx_ffi.$LIB_EXT" >&2
+    echo "       Tried CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>}" >&2
     echo "       Run scripts/build_rustvx.sh first, or pass --rustvx-src." >&2
     exit 1
 fi
@@ -143,7 +154,7 @@ BUILD_RUSTVX="$REPO_ROOT/build-rustvx"  # alternate; rustVX backend
 if [[ $SKIP_BUILD -eq 0 ]]; then
     if [[ $SKIP_AMD -eq 0 ]]; then
         echo ""
-        echo "==> [2/4] Building openvx-mark against AMD MIVisionX..."
+        echo "==> [2/4] Building openvx-mark against AMD MIVisionX (+ opencv-mark)..."
         mkdir -p "$BUILD_AMD"
         ( cd "$BUILD_AMD" && cmake .. -DCMAKE_BUILD_TYPE=Release > /dev/null )
         cmake --build "$BUILD_AMD" --target openvx-mark opencv-mark -j 4
@@ -152,12 +163,38 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
     echo ""
     echo "==> [3/4] Building openvx-mark against rustVX..."
     mkdir -p "$BUILD_RUSTVX"
+    # When --skip-amd is set the AMD build is skipped entirely, but the
+    # 3-way comparison still needs an opencv-mark binary. Build it inside
+    # the rustVX tree in that case so we have a runnable opencv-mark
+    # without needing the AMD MIVisionX runtime to be present at all.
+    # When the AMD build *did* run we leave opencv-mark OFF in the rustVX
+    # tree (it's already in $BUILD_AMD) to avoid building cv:: twice.
+    if [[ $SKIP_AMD -eq 0 ]]; then
+        BUILD_OPENCV_IN_RUSTVX="OFF"
+    else
+        BUILD_OPENCV_IN_RUSTVX="ON"
+        echo "    (also building opencv-mark here — AMD build was skipped)"
+    fi
     ( cd "$BUILD_RUSTVX" && cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
         -DOPENVX_INCLUDES="$RUSTVX_INCLUDE" \
         -DOPENVX_LIB_DIR="$RUSTVX_LIB_DIR" \
-        -DOPENVX_MARK_BUILD_OPENCV=OFF > /dev/null )
-    cmake --build "$BUILD_RUSTVX" --target openvx-mark -j 4
+        -DOPENVX_MARK_BUILD_OPENCV="$BUILD_OPENCV_IN_RUSTVX" > /dev/null )
+    if [[ "$BUILD_OPENCV_IN_RUSTVX" == "ON" ]]; then
+        cmake --build "$BUILD_RUSTVX" --target openvx-mark opencv-mark -j 4
+    else
+        cmake --build "$BUILD_RUSTVX" --target openvx-mark -j 4
+    fi
+fi
+
+# Resolve the directory the opencv-mark binary actually lives in for
+# the run step below. When the AMD build was skipped, opencv-mark is in
+# the rustVX build tree instead. Compute the path once here so the
+# downstream run step doesn't have to branch.
+if [[ $SKIP_AMD -eq 0 ]]; then
+    OPENCV_MARK_BUILD="$BUILD_AMD"
+else
+    OPENCV_MARK_BUILD="$BUILD_RUSTVX"
 fi
 
 # ----------------------------------------------------------------------------
@@ -199,10 +236,13 @@ esac
 cp "$OUTPUT_DIR/_tmp/benchmark_results.json" "$OUTPUT_DIR/rustvx.json"
 
 # ---- OpenCV ----
+# Pick up opencv-mark from whichever build dir actually has it (see
+# OPENCV_MARK_BUILD resolution above — defaults to $BUILD_AMD, falls
+# back to $BUILD_RUSTVX when --skip-amd was passed).
 echo ""
 echo "==> [4/4c] Running opencv-mark..."
 rm -rf "$OUTPUT_DIR/_tmp"
-"$BUILD_AMD/opencv-mark/opencv-mark" "${COMMON_FLAGS[@]}" 2>&1 | tail -5
+"$OPENCV_MARK_BUILD/opencv-mark/opencv-mark" "${COMMON_FLAGS[@]}" 2>&1 | tail -5
 cp "$OUTPUT_DIR/_tmp/benchmark_results.json" "$OUTPUT_DIR/opencv.json"
 
 rm -rf "$OUTPUT_DIR/_tmp"

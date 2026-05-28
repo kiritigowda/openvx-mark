@@ -146,14 +146,26 @@ std::vector<OpenCVBenchmarkCase> registerCvFeatureBenchmarks() {
                         static_cast<float>(gy) * h / grid_n + h / (2 * grid_n));
                 }
             }
+            // Reserve capacity in the per-iteration outputs too:
+            // cv::calcOpticalFlowPyrLK appends 1 entry per input
+            // keypoint, so each timed call would grow these vectors
+            // by DEFAULT_OPTFLOW_POINTS. Without reservation that
+            // first growth lands inside the timing loop (malloc +
+            // memcpy + free of the old buffer); reserving in setup
+            // pushes the allocation out of the budget entirely.
             state->next_pts.clear();
+            state->next_pts.reserve(DEFAULT_OPTFLOW_POINTS);
             state->status.clear();
+            state->status.reserve(DEFAULT_OPTFLOW_POINTS);
             state->err.clear();
+            state->err.reserve(DEFAULT_OPTFLOW_POINTS);
             return true;
         };
         bc.run_fn = [state](CaseBuffers& bufs) {
             // Reset output vectors each iteration so cv::calcOpticalFlowPyrLK
-            // doesn't pick up flags from a previous run.
+            // doesn't pick up flags from a previous run. The capacity
+            // reserved in setup_fn above stays put — clear() does not
+            // free, so subsequent calls reuse the same backing storage.
             state->next_pts.clear();
             state->status.clear();
             state->err.clear();

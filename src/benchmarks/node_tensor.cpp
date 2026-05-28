@@ -416,14 +416,31 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             //     a NULL tensor handle inside the FFI boundary because
             //     the Rust binding expects a valid `vx_tensor` opaque
             //     pointer to dereference for type queries.
-            // We therefore pass a real zero-filled M×M bias tensor so
-            // the cross-impl bench is portable: y = A·B + 0 = A·B,
-            // semantically identical to the no-bias path, and every
-            // impl sees a valid tensor handle. Cost of the add over
-            // M² fp16 ≤ 0.5% of an O(M²·N) matmul at M=N=256 — well
-            // below the timer-noise floor.
+            // We therefore pass a real zero-filled M×M int16 bias
+            // tensor so the cross-impl bench is portable: y = A·B + 0
+            // = A·B, semantically identical to the no-bias path, and
+            // every impl sees a valid tensor handle. Cost of the add
+            // over M² int16 ≤ 0.5% of an O(M²·N) matmul at M=N=256 —
+            // well below the timer-noise floor.
+            //
+            // We MUST explicitly write zeros into the tensor — OpenVX
+            // does not guarantee freshly-created tensor memory is
+            // zero-initialised (impls may return uninitialised pages
+            // for perf), so without this step "bias=garbage" would
+            // perturb every matmul result and tank cross-impl
+            // equivalence in the verify step.
             vx_tensor bias = tracker.trackTensor(vxCreateTensor(ctx, 2, out_dims, VX_TYPE_INT16, 0));
             if (vxGetStatus((vx_reference)bias) != VX_SUCCESS) return false;
+            {
+                std::vector<int16_t> zeros(M * M, 0);
+                vx_size starts[2] = {0, 0};
+                vx_size strides[2] = {sizeof(int16_t), M * sizeof(int16_t)};
+                if (vxCopyTensorPatch(bias, 2, starts, out_dims, strides,
+                                      zeros.data(),
+                                      VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST) != VX_SUCCESS) {
+                    return false;
+                }
+            }
 
             vx_tensor_matrix_multiply_params_t params = {};
             params.transpose_input1 = vx_false_e;

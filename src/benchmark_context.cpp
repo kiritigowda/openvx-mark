@@ -84,6 +84,13 @@ BenchmarkContext::BenchmarkContext() {
 }
 
 BenchmarkContext::~BenchmarkContext() {
+    // Flush any pending suppress-count BEFORE releasing the context.
+    // Without this, if the LAST benchmark of the run ends with the
+    // log callback in a "suppressing duplicates" state, the trailing
+    // "(previous message repeated N more times)" line would never be
+    // emitted — the user would lose the tail of the impl's diagnostic
+    // signal. resetLogDedup() is no-op if no count is pending.
+    resetLogDedup();
     if (context_) {
         vxReleaseContext(&context_);
     }

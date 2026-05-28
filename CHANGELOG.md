@@ -6,6 +6,111 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — PR #21 Copilot review pass
+
+Addresses 16 review comments grouped into four themes:
+
+#### Timing-budget hygiene — no allocations inside `run_fn` (9 fixes)
+
+The opencv-mark runner contract (`include/opencv_runner.h`) requires
+`setup_fn` to allocate all buffers and `run_fn` to do kernel work only,
+so OpenCV timings are comparable to the OpenVX graphs that pre-allocate
+via `vxCreateImage` / `vxCreateTensor` at graph-construct time. Several
+benchmarks were violating that contract — each iteration was paying for
+`cv::Mat::create` / `std::vector::reserve` / `cv::HOGDescriptor`
+construction that should have happened once in `setup_fn`. Per-impl
+timings are now comparable to within timer noise.
+
+- **`GaussianPyramid_ORB`** (`cv_multiscale.cpp`): per-level
+  `blurred` / `downsampled` Mats now preallocated in shared state.
+- **`LaplacianPyramid_S16`** (`cv_multiscale.cpp`): per-level
+  `down` / `up` / `diff` Mats preallocated.
+- **`LaplacianReconstruct`** + **`LaplacianReconstruct_S16`**
+  (`cv_multiscale.cpp`): per-level `up` Mat + a shared
+  `zero_residual` (sized to the largest level) preallocated.
+- **`HOGCells`** (`cv_extraction.cpp`): `cv::HOGDescriptor` instance
+  captured in shared state, constructed once in `setup_fn`.
+- **`HOGFeatures`** (`cv_extraction.cpp`): `cv::HOGDescriptor` AND
+  `std::vector<float> descriptors` captured in shared state.
+  `descriptors` is reserved in `setup_fn` to its final length so
+  `compute()`'s internal `resize()` stays inside the reservation.
+- **`HoughLinesP`** (`cv_extraction.cpp`): `std::vector<cv::Vec4i>
+  lines` captured in shared state and reserved to 4096.
+- **`NonMaxSuppression`** (`cv_extraction.cpp`): `keep_mask` Mat
+  preallocated; per-iter `(input >= input_extra)` Mat expression
+  replaced with in-place `cv::compare(..., CMP_GE)`.
+- **`SobelMagnitudePhase`** (`cv_pipeline_vision.cpp`): drive
+  `cv::Sobel` directly into `CV_32F` so the in-loop S16→F32
+  `convertTo` allocations go away; `phase` scratch preallocated.
+- **`ThresholdedEdge`** (`cv_pipeline_feature.cpp`): same shape as
+  `SobelMagnitudePhase` — Sobel direct to `CV_32F`, plus a
+  preallocated `magf` (F32 magnitude) and `magu8` (U8 saturated)
+  in shared state.
+- **`OpticalFlowPyrLK`** (`cv_feature.cpp`): per-iteration output
+  vectors (`next_pts`, `status`, `err`) are now `reserve()`d to
+  `DEFAULT_OPTFLOW_POINTS` in `setup_fn`. They were already
+  cleared per iteration; `reserve()` ensures the first per-iter
+  `push_back` doesn't realloc.
+
+#### Memory ceiling for HOGFeatures (2 fixes)
+
+`cv::HOGDescriptor::compute()` slides the configured window across
+the full image and produces one descriptor per slide — descriptor
+storage grows ~`O(w·h)`. At 4K it's ~800 MB on the OpenCV side and
+~420 MB of `int16` tensor on the OpenVX side, large enough to OOM
+CI runners and to dominate the actual kernel cost with allocator
+pressure.
+
+- **openvx-mark `HOGFeatures`** (`src/benchmarks/node_extraction.cpp`):
+  effective input dims capped at 1024×768 (the classic
+  HOG-pedestrian-detect resolution) — yields a ~36 MB `int16`
+  feature tensor instead of 420 MB at 4K.
+- **opencv-mark `HOGFeatures`** (`cv_extraction.cpp`): same 1024×768
+  cap applied to keep the float `descriptors` vector ≤ 80 MB.
+
+The per-window cost is what the benchmark measures, so capping window
+count doesn't change what the cross-impl comparison answers.
+
+#### Correctness — TensorMatMul bias actually zero (1 fix)
+
+`TensorMatMul` (`src/benchmarks/node_tensor.cpp`) was passing a
+freshly-created `vx_tensor` as the bias input and claiming in the
+comment it was "zero-filled". OpenVX does **not** guarantee
+freshly-created tensors are zero-initialised — impls are free to
+return uninitialised pages for perf. Without an explicit write,
+the bias was effectively `garbage`, which would perturb the matmul
+output and break the verify path's cross-impl equivalence check.
+
+Fix: explicit `vxCopyTensorPatch(bias, ..., zeros, VX_WRITE_ONLY, ...)`
+in `setup_fn` so every impl actually sees zeros in the bias tensor.
+Also corrected the surrounding comment: "M² fp16" → "M² int16" to
+match the actual `VX_TYPE_INT16` storage.
+
+#### Tidy — log-dedup tail flush + script robustness (3 fixes)
+
+- **`BenchmarkContext` destructor now calls `resetLogDedup()`**
+  (`src/benchmark_context.cpp`). If the last benchmark of a run
+  ended with the log callback in a "suppressing duplicates" state,
+  the trailing `(previous message repeated N more times)` line
+  would never be emitted and the user would lose the tail of the
+  driver's diagnostic signal. The destructor flush guarantees the
+  count is always surfaced.
+- **`compare_three_way.sh --skip-amd` no longer breaks the OpenCV
+  run** (`scripts/compare_three_way.sh`). The script was running
+  opencv-mark from `$BUILD_AMD/opencv-mark/opencv-mark` even when
+  `--skip-amd` skipped the AMD configure/build entirely, so on a
+  clean checkout `--skip-amd` failed with "binary not found". Fix:
+  when `--skip-amd` is set, build opencv-mark inside the rustVX
+  tree instead (toggle `-DOPENVX_MARK_BUILD_OPENCV=ON` there) and
+  run opencv-mark from whichever build dir actually has it.
+- **`compare_three_way.sh` now honours `CARGO_TARGET_DIR`** for
+  resolving the rustVX library path. `build_rustvx.sh` already
+  supports the env var (IDEs / CI caches commonly redirect cargo
+  output to a shared tree); the comparison script was hard-coding
+  `$RUSTVX_SRC/target/release` and would fail with a misleading
+  "library not found" message in those setups. The resolution
+  logic now mirrors `build_rustvx.sh` exactly.
+
 ### Fixed — Enhanced-Vision FFI hardening (preempts strict-FFI segfaults)
 
 - **`HoughLinesP` output array now uses `VX_TYPE_LINE_2D`** (the

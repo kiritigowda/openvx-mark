@@ -53,6 +53,7 @@
 //                        INT16_MIN for S16).
 
 #include "opencv_runner.h"
+#include <memory>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/objdetect.hpp>
 #include <opencv2/core.hpp>
@@ -175,25 +176,40 @@ std::vector<OpenCVBenchmarkCase> registerCvExtractionBenchmarks() {
     // accumulation, although the binning happens later in OpenCV's
     // pipeline (during compute()). For benchmark purposes we time the
     // gradient step which dominates the per-pixel cost.
+    //
+    // The HOGDescriptor instance is captured in shared state and
+    // constructed once in setup_fn. Constructing a fresh
+    // cv::HOGDescriptor inside run_fn (the previous shape) walked
+    // OpenCV's default-init code path on every iteration, which on
+    // a busy bench is enough non-kernel overhead to bias the timing.
     {
+        struct HogCellsState {
+            cv::HOGDescriptor hog;  // defaults: win 64x128, block 16x16, cell 8x8, 9 bins
+        };
+        auto state = std::make_shared<HogCellsState>();
+
         OpenCVBenchmarkCase bc;
         bc.name = "HOGCells";
         bc.category = "extraction";
         bc.feature_set = "enhanced_vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+        bc.setup_fn = [state](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
             // HOG window must be a multiple of cell (8x8) and ≥ 16x16.
             const uint32_t ew = std::max<uint32_t>(16, (w / 8) * 8);
             const uint32_t eh = std::max<uint32_t>(16, (h / 8) * 8);
             bufs.input = gen.makeU8(ew, eh);
-            bufs.output.create(static_cast<int>(eh), static_cast<int>(ew), CV_32FC2);  // mag
-            bufs.output_extra.create(static_cast<int>(eh), static_cast<int>(ew), CV_8UC2);  // angle bins
+            bufs.output.create(static_cast<int>(eh), static_cast<int>(ew), CV_32FC2);   // mag
+            bufs.output_extra.create(static_cast<int>(eh), static_cast<int>(ew), CV_8UC2); // angle bins
+            // Default-constructed HOGDescriptor lives in state; no
+            // run_fn-side construction. NOTE: HOGDescriptor is not
+            // thread-safe in OpenCV, but our runner is single-threaded
+            // per case so this is fine.
+            state->hog = cv::HOGDescriptor();
             return true;
         };
-        bc.run_fn = [](CaseBuffers& bufs) {
-            cv::HOGDescriptor hog;  // defaults: win 64x128, block 16x16, cell 8x8, 9 bins
+        bc.run_fn = [state](CaseBuffers& bufs) {
             // computeGradient signature: (img, grad, qangle, paddingTL, paddingBR)
-            hog.computeGradient(bufs.input, bufs.output, bufs.output_extra,
-                                cv::Size(0, 0), cv::Size(0, 0));
+            state->hog.computeGradient(bufs.input, bufs.output, bufs.output_extra,
+                                       cv::Size(0, 0), cv::Size(0, 0));
         };
         bc.verify_fn = []() -> bool {
             cv::HOGDescriptor hog;
@@ -209,32 +225,70 @@ std::vector<OpenCVBenchmarkCase> registerCvExtractionBenchmarks() {
     }
 
     // HOGFeatures — U8 input, F32 descriptor vector (full HOG pipeline).
+    //
+    // Two preallocation moves vs the original shape:
+    //   1) cv::HOGDescriptor with the openvx-mark-matching parameters
+    //      is captured in shared state, not reconstructed per iter.
+    //   2) std::vector<float> descriptors is also captured + reserved
+    //      to its final size in setup_fn so hog.compute()'s resize()
+    //      below stays inside the reserved capacity — no realloc in
+    //      the timed loop.
+    //
+    // Also: cap the effective input dimensions to 1024x768.
+    // cv::HOGDescriptor::compute slides a 64x64 window with stride 8
+    // across the full image, producing one descriptor per window. At
+    // FHD that's ~30k windows × 1764 floats/win ≈ 50M floats ≈ 200 MB
+    // of descriptors; at 4K ≈ 800 MB. Capping to 1024x768 (the
+    // classic HOG-pedestrian-detect resolution) keeps the descriptors
+    // vector ≤ ~80 MB while still being a meaningful workload — the
+    // per-window cost is what's being measured, so window count
+    // doesn't change the comparison answer.
     {
+        struct HogFeaturesState {
+            cv::HOGDescriptor hog{cv::Size(64, 64),   // win
+                                  cv::Size(16, 16),   // block
+                                  cv::Size(8, 8),     // block stride
+                                  cv::Size(8, 8),     // cell
+                                  9};                 // nbins
+            std::vector<float> descriptors;
+        };
+        auto state = std::make_shared<HogFeaturesState>();
+
         OpenCVBenchmarkCase bc;
         bc.name = "HOGFeatures";
         bc.category = "extraction";
         bc.feature_set = "enhanced_vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+        bc.setup_fn = [state](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+            // Cap rationale: see block comment above.
+            constexpr uint32_t MAX_HOG_W = 1024;
+            constexpr uint32_t MAX_HOG_H = 768;
+            const uint32_t cw = std::min<uint32_t>(w, MAX_HOG_W);
+            const uint32_t ch = std::min<uint32_t>(h, MAX_HOG_H);
             // Round up to a HOG window stride (8x8). cv::HOGDescriptor
             // defaults to a 64x128 window; we use 64x64 to match the
             // openvx-mark benchmark and feed an image that's at least
             // that big.
-            const uint32_t ew = std::max<uint32_t>(64, (w / 8) * 8);
-            const uint32_t eh = std::max<uint32_t>(64, (h / 8) * 8);
+            const uint32_t ew = std::max<uint32_t>(64, (cw / 8) * 8);
+            const uint32_t eh = std::max<uint32_t>(64, (ch / 8) * 8);
             bufs.input = gen.makeU8(ew, eh);
+
+            // Reserve the descriptors vector to the size compute() will
+            // produce: getDescriptorSize() returns the per-window length,
+            // and the number of windows = win_per_row × win_per_col
+            // with stride (8,8) and no padding.
+            const size_t per_win = state->hog.getDescriptorSize();
+            const size_t wins_per_row = (ew >= 64) ? ((ew - 64) / 8 + 1) : 1;
+            const size_t wins_per_col = (eh >= 64) ? ((eh - 64) / 8 + 1) : 1;
+            state->descriptors.clear();
+            state->descriptors.reserve(per_win * wins_per_row * wins_per_col);
             return true;
         };
-        bc.run_fn = [](CaseBuffers& bufs) {
-            // Match openvx-mark's HOGFeatures parameters:
-            //   window 64×64, block 16×16, block stride 8×8, cell 8×8, 9 bins
-            cv::HOGDescriptor hog(cv::Size(64, 64),   // win
-                                  cv::Size(16, 16),   // block
-                                  cv::Size(8, 8),     // block stride
-                                  cv::Size(8, 8),     // cell
-                                  9);                 // nbins
-            std::vector<float> descriptors;
-            hog.compute(bufs.input, descriptors, cv::Size(8, 8), cv::Size(0, 0));
-            (void)descriptors.size();
+        bc.run_fn = [state](CaseBuffers& bufs) {
+            // compute() resizes descriptors to the exact output length —
+            // since we reserved to that exact size in setup_fn the
+            // resize is a no-op (no realloc), so the timing measures
+            // only the kernel work.
+            state->hog.compute(bufs.input, state->descriptors, cv::Size(8, 8), cv::Size(0, 0));
         };
         bc.verify_fn = []() -> bool {
             cv::Mat in(64, 64, CV_8UC1, cv::Scalar(0));
@@ -250,29 +304,47 @@ std::vector<OpenCVBenchmarkCase> registerCvExtractionBenchmarks() {
     }
 
     // HoughLinesP — U8 (binary) in, vector<Vec4i> lines out.
+    //
+    // The output lines vector is captured in shared state and reserved
+    // to a sensible upper bound in setup_fn. Without this, every timed
+    // call would land cv::HoughLinesP's first push_back inside the
+    // measurement window (vector allocation + copies of any line
+    // segments accumulated so far).
     {
+        struct HoughState {
+            std::vector<cv::Vec4i> lines;
+        };
+        auto state = std::make_shared<HoughState>();
+
         OpenCVBenchmarkCase bc;
         bc.name = "HoughLinesP";
         bc.category = "extraction";
         bc.feature_set = "enhanced_vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+        bc.setup_fn = [state](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
             bufs.input = gen.makeU8(w, h);
             // HoughLinesP wants a binary (edge) image; threshold the random
             // input so we get a meaningful set of edge pixels. Threshold
             // inside setup_fn so cv::HoughLinesP only times the Hough step
             // itself.
             cv::threshold(bufs.input, bufs.output_extra, 200, 255, cv::THRESH_BINARY);
+            // 4096 is a generous cap for a random-edge image at any
+            // resolution we exercise; the worst-case observed in
+            // local runs is ~few hundred segments. Reserve once, reuse.
+            state->lines.clear();
+            state->lines.reserve(4096);
             return true;
         };
-        bc.run_fn = [](CaseBuffers& bufs) {
-            std::vector<cv::Vec4i> lines;
-            cv::HoughLinesP(bufs.output_extra, lines,
+        bc.run_fn = [state](CaseBuffers& bufs) {
+            // clear() preserves capacity; HoughLinesP will append into
+            // the reserved storage without realloc as long as the
+            // detected line count stays under 4096.
+            state->lines.clear();
+            cv::HoughLinesP(bufs.output_extra, state->lines,
                             /*rho=*/1.0,
                             /*theta=*/CV_PI / 180.0,
                             /*threshold=*/50,
                             /*minLineLength=*/30,
                             /*maxLineGap=*/10);
-            (void)lines.size();
         };
         bc.verify_fn = []() -> bool {
             // Step image with a vertical white bar → at least one line found.
@@ -291,25 +363,40 @@ std::vector<OpenCVBenchmarkCase> registerCvExtractionBenchmarks() {
     // We compute local maxima using cv::dilate (max filter over 3x3),
     // then keep pixels equal to their local max and set the rest to
     // INT16_MIN.
+    //
+    // keep_mask was previously allocated by an in-loop Mat expression
+    // (`bufs.input >= bufs.input_extra`) which allocates a fresh
+    // CV_8UC1 the size of the image every iteration. Preallocate it
+    // in shared state and fill via cv::compare to keep run_fn
+    // allocation-free.
     {
+        struct NmsState {
+            cv::Mat keep_mask;  // CV_8UC1, preallocated in setup_fn
+        };
+        auto state = std::make_shared<NmsState>();
+
         OpenCVBenchmarkCase bc;
         bc.name = "NonMaxSuppression";
         bc.category = "extraction";
         bc.feature_set = "enhanced_vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+        bc.setup_fn = [state](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
             bufs.input = gen.makeS16(w, h);
             bufs.input_extra.create(static_cast<int>(h), static_cast<int>(w), CV_16SC1);
             bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_16SC1);
+            state->keep_mask.create(static_cast<int>(h), static_cast<int>(w), CV_8UC1);
             return true;
         };
-        bc.run_fn = [](CaseBuffers& bufs) {
+        bc.run_fn = [state](CaseBuffers& bufs) {
             static const cv::Mat se = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
             // Local max via dilate; pixel kept iff input == local max.
             cv::dilate(bufs.input, bufs.input_extra, se,
                        cv::Point(-1, -1), 1, cv::BORDER_REPLICATE);
-            cv::Mat keep_mask = (bufs.input >= bufs.input_extra);  // CV_8UC1 mask
-            bufs.output.setTo(static_cast<int16_t>(-32768));        // INT16_MIN
-            bufs.input.copyTo(bufs.output, keep_mask);
+            // cv::compare writes into the preallocated mask in place —
+            // no Mat allocation in the timed loop. CMP_GE = "input >=
+            // input_extra" → 255 where input is a local max, else 0.
+            cv::compare(bufs.input, bufs.input_extra, state->keep_mask, cv::CMP_GE);
+            bufs.output.setTo(static_cast<int16_t>(-32768));  // INT16_MIN
+            bufs.input.copyTo(bufs.output, state->keep_mask);
         };
         bc.verify_fn = []() -> bool {
             cv::Mat in(64, 64, CV_16SC1, cv::Scalar(10));
@@ -317,7 +404,8 @@ std::vector<OpenCVBenchmarkCase> registerCvExtractionBenchmarks() {
             cv::Mat dilated, out(64, 64, CV_16SC1, cv::Scalar(-32768));
             const cv::Mat se = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
             cv::dilate(in, dilated, se, cv::Point(-1, -1), 1, cv::BORDER_REPLICATE);
-            cv::Mat mask = (in >= dilated);
+            cv::Mat mask;
+            cv::compare(in, dilated, mask, cv::CMP_GE);
             in.copyTo(out, mask);
             // Center should keep its 1000 value.
             return out.at<int16_t>(32, 32) == 1000;

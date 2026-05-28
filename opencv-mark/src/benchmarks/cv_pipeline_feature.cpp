@@ -30,6 +30,7 @@
 
 #include "opencv_runner.h"
 #include "benchmark_config.h"
+#include <memory>
 #include <opencv2/features2d.hpp>
 #include <opencv2/imgproc.hpp>
 #include <vector>
@@ -113,29 +114,45 @@ std::vector<OpenCVBenchmarkCase> registerCvFeaturePipelines() {
     }
 
     // 3. ThresholdedEdge: Sobel3x3 → Magnitude → ConvertDepth(S16→U8) → Threshold.
+    //
+    // Same allocation-fix shape as SobelMagnitudePhase in
+    // cv_pipeline_vision.cpp: drive Sobel directly into CV_32F so we
+    // skip the per-iter convertTo+alloc step, and preallocate the
+    // intermediate magnitude (F32) and saturated U8 buffer in shared
+    // state. Without this, the pipeline allocated/freed ~24 MB of
+    // CV_32F + ~6 MB of CV_8U at FHD every iteration — enough to
+    // dwarf the kernel work itself.
     {
+        struct ThreshEdgeState {
+            cv::Mat magf;   // CV_32F, magnitude scratch
+            cv::Mat magu8;  // CV_8U, saturated magnitude
+        };
+        auto state = std::make_shared<ThreshEdgeState>();
+
         OpenCVBenchmarkCase bc;
         bc.name = "ThresholdedEdge";
         bc.category = "pipeline_feature";
         bc.feature_set = "vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+        bc.setup_fn = [state](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
             bufs.input = gen.makeU8(w, h);
-            // input_extra = dx (S16), output_extra = dy (S16),
-            // output = final U8 thresholded edges.
-            bufs.input_extra.create(static_cast<int>(h), static_cast<int>(w), CV_16SC1);
-            bufs.output_extra.create(static_cast<int>(h), static_cast<int>(w), CV_16SC1);
+            // input_extra = dx (F32 direct, was S16+convertTo),
+            // output_extra = dy (F32), output = final U8 thresholded edges.
+            bufs.input_extra.create(static_cast<int>(h), static_cast<int>(w), CV_32FC1);
+            bufs.output_extra.create(static_cast<int>(h), static_cast<int>(w), CV_32FC1);
             bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_8UC1);
+            state->magf.create(static_cast<int>(h), static_cast<int>(w), CV_32FC1);
+            state->magu8.create(static_cast<int>(h), static_cast<int>(w), CV_8UC1);
             return true;
         };
-        bc.run_fn = [](CaseBuffers& bufs) {
-            cv::Sobel(bufs.input, bufs.input_extra,  CV_16S, 1, 0, 3, 1, 0, cv::BORDER_REPLICATE);
-            cv::Sobel(bufs.input, bufs.output_extra, CV_16S, 0, 1, 3, 1, 0, cv::BORDER_REPLICATE);
-            cv::Mat dxf, dyf, magf, magu8;
-            bufs.input_extra.convertTo(dxf, CV_32F);
-            bufs.output_extra.convertTo(dyf, CV_32F);
-            cv::magnitude(dxf, dyf, magf);
-            magf.convertTo(magu8, CV_8U);  // saturate to U8
-            cv::threshold(magu8, bufs.output, 100, 255, cv::THRESH_BINARY);
+        bc.run_fn = [state](CaseBuffers& bufs) {
+            // Sobel directly into F32 — no S16+convertTo in the loop.
+            cv::Sobel(bufs.input, bufs.input_extra,  CV_32F, 1, 0, 3, 1, 0, cv::BORDER_REPLICATE);
+            cv::Sobel(bufs.input, bufs.output_extra, CV_32F, 0, 1, 3, 1, 0, cv::BORDER_REPLICATE);
+            cv::magnitude(bufs.input_extra, bufs.output_extra, state->magf);
+            // convertTo writes into preallocated magu8 (no allocation since
+            // size+type already match).
+            state->magf.convertTo(state->magu8, CV_8U);  // saturate to U8
+            cv::threshold(state->magu8, bufs.output, 100, 255, cv::THRESH_BINARY);
         };
         bc.verify_fn = []() -> bool {
             cv::Mat in(64, 64, CV_8UC1, cv::Scalar(0));
