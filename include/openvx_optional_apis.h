@@ -117,6 +117,35 @@ inline TensorMatrixMultiplyNodeFn tensorMatrixMultiplyNode() {
     return fn;
 }
 
+// vxTensorTransposeNode(graph, input, output, dim1, dim2) → vx_node
+//
+// The typed helper is the only portable way to construct this node:
+// OpenVX 1.3.1 §3.51 only defines the helper signature; the underlying
+// kernel's parameter index order is impl-defined. Going through
+// vxGetKernelByEnum + vxSetParameterByIndex with an assumed order
+// (e.g. [input, output, dim1, dim2]) works on AMD AGO but breaks on
+// rustVX (which uses [input, dim1, dim2, output]).
+using TensorTransposeNodeFn = vx_node (*)(vx_graph, vx_tensor, vx_tensor,
+                                          vx_size, vx_size);
+inline TensorTransposeNodeFn tensorTransposeNode() {
+    static TensorTransposeNodeFn fn = reinterpret_cast<TensorTransposeNodeFn>(
+        dlsym(RTLD_DEFAULT, "vxTensorTransposeNode"));
+    return fn;
+}
+
+// vxTensorConvertDepthNode(graph, input, policy_enum, norm_scalar,
+//                          offset_scalar, output) → vx_node
+//
+// Same rationale as vxTensorTransposeNode: prefer the typed helper so
+// each impl can dispatch through its own param-order convention.
+using TensorConvertDepthNodeFn = vx_node (*)(vx_graph, vx_tensor, vx_enum,
+                                             vx_scalar, vx_scalar, vx_tensor);
+inline TensorConvertDepthNodeFn tensorConvertDepthNode() {
+    static TensorConvertDepthNodeFn fn = reinterpret_cast<TensorConvertDepthNodeFn>(
+        dlsym(RTLD_DEFAULT, "vxTensorConvertDepthNode"));
+    return fn;
+}
+
 #endif // OPENVX_HAS_1_2
 
 } // namespace openvx_optional
