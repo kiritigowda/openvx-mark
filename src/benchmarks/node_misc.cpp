@@ -567,40 +567,42 @@ std::vector<BenchmarkCase> registerMiscBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            // 64x64 inputs: true_img all 42, false_img all 99, cond=true → output "should" be 42.
-            //
-            // ...but Select's image-input path is implementation-
-            // diverse: some impls (rustVX in particular) return
-            // VX_SUCCESS from vxProcessGraph without actually copying
-            // pixels from true_img to out. That is incomplete per the
-            // OpenVX 1.3.1 §3.46 contract, but it's not our bug to
-            // catch in this benchmark — kernel correctness belongs to
-            // the impl's CTS suite, not to a perf benchmark.
-            //
-            // We therefore only verify "graph constructed + executed
-            // without an error status". The output-value check is
-            // skipped to avoid noisy VERIFY FAILED rows on impls that
-            // ship a partial Select.
-            std::vector<uint8_t> t(64 * 64, 42), f(64 * 64, 99);
-            vx_image true_img = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, t.data());
-            vx_image false_img = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, f.data());
-            if (!true_img || !false_img) { if (true_img) vxReleaseImage(&true_img); if (false_img) vxReleaseImage(&false_img); return true; }
-            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
-            vx_bool cond = vx_true_e;
-            vx_scalar condition = vxCreateScalar(ctx, VX_TYPE_BOOL, &cond);
+            // CTS-style structural check (modelled on
+            // OpenVX-cts test_controlflow.c): exercise Select on
+            // SCALAR references rather than images. OpenVX 1.3.1 §3.46
+            // requires Select to work for any vx_reference type, but
+            // in practice many impls (rustVX among them) only fully
+            // implement the SCALAR path — images return VX_SUCCESS
+            // but don't copy pixels, which would make value-pinning on
+            // image outputs unreliable across impls. The scalar path
+            // is the universally-implemented one, so it's the right
+            // verify target. cond=true ⇒ output should equal true_val.
+            int32_t true_val = 42, false_val = 99, out_val = -1;
+            vx_bool cond_val = vx_true_e;
+            vx_scalar condition = vxCreateScalar(ctx, VX_TYPE_BOOL,  &cond_val);
+            vx_scalar t_scalar  = vxCreateScalar(ctx, VX_TYPE_INT32, &true_val);
+            vx_scalar f_scalar  = vxCreateScalar(ctx, VX_TYPE_INT32, &false_val);
+            vx_scalar out_scalar= vxCreateScalar(ctx, VX_TYPE_INT32, &out_val);
             vx_graph g = vxCreateGraph(ctx);
             vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_SELECT);
             vx_node n = vxCreateGenericNode(g, k);
             vxReleaseKernel(&k);
             vxSetParameterByIndex(n, 0, (vx_reference)condition);
-            vxSetParameterByIndex(n, 1, (vx_reference)true_img);
-            vxSetParameterByIndex(n, 2, (vx_reference)false_img);
-            vxSetParameterByIndex(n, 3, (vx_reference)out);
+            vxSetParameterByIndex(n, 1, (vx_reference)t_scalar);
+            vxSetParameterByIndex(n, 2, (vx_reference)f_scalar);
+            vxSetParameterByIndex(n, 3, (vx_reference)out_scalar);
             vx_status status = vxVerifyGraph(g);
             if (status == VX_SUCCESS) status = vxProcessGraph(g);
-            bool ok = (status == VX_SUCCESS) || (status == VX_ERROR_NOT_SUPPORTED);
-            vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&condition);
-            vxReleaseImage(&true_img); vxReleaseImage(&false_img); vxReleaseImage(&out);
+            bool ok = false;
+            if (status == VX_SUCCESS) {
+                vxCopyScalar(out_scalar, &out_val, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+                ok = (out_val == true_val);
+            } else {
+                ok = (status == VX_ERROR_NOT_SUPPORTED);
+            }
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseScalar(&condition); vxReleaseScalar(&t_scalar);
+            vxReleaseScalar(&f_scalar);  vxReleaseScalar(&out_scalar);
             return ok;
         };
         cases.push_back(bc);

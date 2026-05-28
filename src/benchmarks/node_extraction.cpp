@@ -95,16 +95,37 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            // 64x64 source, 16x16 template → valid correlation map is
-            // (64-16+1) x (64-16+1) = 49x49. See spec note above.
-            const uint32_t W = 64, H = 64, TW = 16, TH = 16;
-            const uint32_t OW = W - TW + 1, OH = H - TH + 1;
-            std::vector<uint8_t> src(W * H, 100);
-            std::vector<uint8_t> tmpl(TW * TH, 100);
-            vx_image src_img = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, src.data());
+            // CTS-style structural check (modelled on
+            // OpenVX-cts test_matchtemplate.c testGraphProcessing):
+            // place a known template at a known location in the source
+            // image, run MatchTemplate, then locate the correlation
+            // peak with `vx_int16` argmax over the output. Verify the
+            // peak is at the expected position within ±1 pixel
+            // tolerance. This pattern is impl-independent — every
+            // CTS-conformant impl must find the peak at the embedded-
+            // template location regardless of internal fixed-point
+            // conventions, because correlation is maximised where the
+            // patterns align.
+            //
+            // Setup: 64x64 dark source with a 16x16 bright square
+            // embedded at (24, 24). Template is 16x16 bright. Peak
+            // should appear at (24, 24) in the output correlation map.
+            constexpr uint32_t W = 64, H = 64, TW = 16, TH = 16;
+            constexpr uint32_t OW = W - TW + 1, OH = H - TH + 1;
+            constexpr uint32_t PEAK_X = 24, PEAK_Y = 24;
+
+            std::vector<uint8_t> src(W * H, 10);     // dark background
+            for (uint32_t y = PEAK_Y; y < PEAK_Y + TH; ++y) {
+                for (uint32_t x = PEAK_X; x < PEAK_X + TW; ++x) {
+                    src[y * W + x] = 250;            // bright square
+                }
+            }
+            std::vector<uint8_t> tmpl(TW * TH, 250); // matches bright square
+
+            vx_image src_img  = verify::createImage(ctx, W,  H,  VX_DF_IMAGE_U8, src.data());
             vx_image tmpl_img = verify::createImage(ctx, TW, TH, VX_DF_IMAGE_U8, tmpl.data());
             if (!src_img || !tmpl_img) {
-                if (src_img) vxReleaseImage(&src_img);
+                if (src_img)  vxReleaseImage(&src_img);
                 if (tmpl_img) vxReleaseImage(&tmpl_img);
                 return true;
             }
@@ -121,12 +142,30 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             vxSetParameterByIndex(n, 3, (vx_reference)out);
             vx_status status = vxVerifyGraph(g);
             if (status == VX_SUCCESS) status = vxProcessGraph(g);
-            // Smoke check only — uniform 100x100 src + 100x100 tmpl ⇒
-            // normalised cross-correlation = 1.0 everywhere, which in
-            // INT16 fixed-point representation is impl-defined. We
-            // only require "graph ran".
-            auto result = verify::readImageS16(out, OW, OH);
-            bool ok = (status != VX_SUCCESS) ? true : !result.empty();
+            bool ok = false;
+            if (status == VX_SUCCESS) {
+                auto result = verify::readImageS16(out, OW, OH);
+                if (!result.empty()) {
+                    // Find argmax of the correlation map (CCORR_NORM ⇒
+                    // higher = better match). Don't rely on absolute
+                    // values — only the LOCATION of the peak is
+                    // semantics-independent.
+                    int16_t peak_val = INT16_MIN;
+                    uint32_t peak_x = 0, peak_y = 0;
+                    for (uint32_t y = 0; y < OH; ++y) {
+                        for (uint32_t x = 0; x < OW; ++x) {
+                            int16_t v = result[y * OW + x];
+                            if (v > peak_val) { peak_val = v; peak_x = x; peak_y = y; }
+                        }
+                    }
+                    // CTS allows ±1 pixel tolerance on the peak location.
+                    const int dx = static_cast<int>(peak_x) - static_cast<int>(PEAK_X);
+                    const int dy = static_cast<int>(peak_y) - static_cast<int>(PEAK_Y);
+                    ok = (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1);
+                }
+            } else {
+                ok = (status == VX_ERROR_NOT_SUPPORTED);
+            }
             vxReleaseNode(&n); vxReleaseGraph(&g); vxReleaseScalar(&match_method);
             vxReleaseImage(&src_img); vxReleaseImage(&tmpl_img); vxReleaseImage(&out);
             return ok;
@@ -389,13 +428,97 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
-        bc.verify_fn = [](vx_context /*ctx*/) -> bool {
-            // Smoke check skipped — HOGFeatures depends on a populated
-            // HOGCells output, the test data shape is sensitive to
-            // implementation rounding, and the dominant cost is the
-            // per-window block normalisation loop which runs on any
-            // input. Graph_setup validation already covers wiring.
-            return true;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // CTS-style structural check (modelled on
+            // OpenVX-cts test_hog.c): chain HOGCells → HOGFeatures on
+            // a small gradient input image and assert the features
+            // tensor contains at least one non-zero element. The HOG
+            // descriptor is impl-defined in exact values (cell
+            // histogram bin assignment + block normalisation rounding)
+            // but every conformant impl must produce non-zero output
+            // for a non-uniform input — uniform input has zero
+            // gradient ⇒ zero descriptor, non-uniform input has
+            // non-zero gradient ⇒ non-zero descriptor.
+            auto cells_fn    = openvx_optional::hogCellsNode();
+            auto features_fn = openvx_optional::hogFeaturesNode();
+            if (!cells_fn || !features_fn) return true;  // not supported
+
+            constexpr vx_int32 CELL = 8, BLOCK = 16, BLOCK_STRIDE = 8;
+            constexpr vx_int32 WIN = 64, WIN_STRIDE = 8, BINS = 9;
+            constexpr uint32_t W = 80, H = 72;  // multiple of CELL, ≥ WIN+stride
+
+            // Gradient ramp: pixel value = (x*3 + y*5) mod 256.
+            // Strong horizontal + vertical gradient ⇒ non-zero HOG.
+            std::vector<uint8_t> img(W * H);
+            for (uint32_t y = 0; y < H; ++y) {
+                for (uint32_t x = 0; x < W; ++x) {
+                    img[y * W + x] = static_cast<uint8_t>((x * 3 + y * 5) & 0xFF);
+                }
+            }
+            vx_image input = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, img.data());
+            if (!input) return true;
+
+            vx_size mag_dims[2] = {W / CELL, H / CELL};
+            vx_size bin_dims[3] = {W / CELL, H / CELL, BINS};
+            vx_tensor magnitudes = vxCreateTensor(ctx, 2, mag_dims, VX_TYPE_INT16, 0);
+            vx_tensor bins       = vxCreateTensor(ctx, 3, bin_dims, VX_TYPE_INT16, 0);
+
+            vx_hog_t params = {};
+            params.cell_width    = CELL;
+            params.cell_height   = CELL;
+            params.block_width   = BLOCK;
+            params.block_height  = BLOCK;
+            params.block_stride  = BLOCK_STRIDE;
+            params.num_bins      = BINS;
+            params.window_width  = WIN;
+            params.window_height = WIN;
+            params.window_stride = WIN_STRIDE;
+            params.threshold     = 0.2f;
+
+            const vx_int32 cells_per_block = (BLOCK / CELL) * (BLOCK / CELL);
+            const vx_int32 blocks_per_win  = ((WIN - BLOCK) / BLOCK_STRIDE + 1) *
+                                             ((WIN - BLOCK) / BLOCK_STRIDE + 1);
+            const vx_int32 win_per_row     = (W - WIN) / WIN_STRIDE + 1;
+            const vx_int32 win_per_col     = (H - WIN) / WIN_STRIDE + 1;
+            const vx_size  feature_dim     = static_cast<vx_size>(
+                cells_per_block * BINS * blocks_per_win);
+            vx_size feat_dims[3] = {
+                static_cast<vx_size>(win_per_row),
+                static_cast<vx_size>(win_per_col),
+                feature_dim,
+            };
+            vx_tensor features = vxCreateTensor(ctx, 3, feat_dims, VX_TYPE_INT16, 0);
+
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n_cells = cells_fn(g, input, CELL, CELL, BINS, magnitudes, bins);
+            vx_node n_feat  = features_fn(g, input, magnitudes, bins,
+                                          &params, sizeof(params), features);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+
+            bool ok = false;
+            if (status == VX_SUCCESS) {
+                // Read the features tensor and check ≥1 non-zero element.
+                const vx_size total = static_cast<vx_size>(win_per_row) *
+                                      static_cast<vx_size>(win_per_col) * feature_dim;
+                std::vector<int16_t> feats(total, 0);
+                vx_size starts[3]   = {0, 0, 0};
+                vx_size strides[3]  = {sizeof(int16_t),
+                                       sizeof(int16_t) * feat_dims[0],
+                                       sizeof(int16_t) * feat_dims[0] * feat_dims[1]};
+                if (vxCopyTensorPatch(features, 3, starts, feat_dims, strides,
+                                      feats.data(),
+                                      VX_READ_ONLY, VX_MEMORY_TYPE_HOST) == VX_SUCCESS) {
+                    for (int16_t v : feats) { if (v != 0) { ok = true; break; } }
+                }
+            } else {
+                ok = (status == VX_ERROR_NOT_SUPPORTED);
+            }
+
+            vxReleaseNode(&n_cells); vxReleaseNode(&n_feat); vxReleaseGraph(&g);
+            vxReleaseTensor(&features); vxReleaseTensor(&bins); vxReleaseTensor(&magnitudes);
+            vxReleaseImage(&input);
+            return ok;
         };
         cases.push_back(bc);
     }
@@ -476,11 +599,59 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             return true;
         };
         bc.immediate_func = nullptr;
-        bc.verify_fn = [](vx_context /*ctx*/) -> bool {
-            // Implementation-defined output (the algorithm is allowed to
-            // be non-deterministic per OpenVX 1.3.1 §3.27). Graph_setup
-            // validation covers wiring.
-            return true;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            // CTS-style structural check (modelled on
+            // OpenVX-cts test_houghlinesp.c): draw two clear lines on
+            // a 64x64 binary canvas and assert HoughLinesP detects at
+            // least one line. The exact line count is impl-defined
+            // (OpenVX 1.3.1 §3.27 allows non-deterministic outputs),
+            // but every conformant impl must return ≥1 line for a
+            // canvas with at least one obvious straight edge.
+            auto fn = openvx_optional::houghLinesPNode();
+            if (!fn) return true;
+
+            constexpr uint32_t W = 64, H = 64;
+            std::vector<uint8_t> img(W * H, 0);
+            // Vertical line at column 32, rows 8-56 (49 pixels long).
+            for (uint32_t y = 8; y <= 56; ++y) img[y * W + 32] = 255;
+            // Horizontal line at row 32, cols 8-56.
+            for (uint32_t x = 8; x <= 56; ++x) img[32 * W + x] = 255;
+
+            vx_image input = verify::createImage(ctx, W, H, VX_DF_IMAGE_U8, img.data());
+            if (!input) return true;
+
+            vx_array lines = vxCreateArray(ctx, VX_TYPE_LINE_2D, 256);
+            vx_size zero = 0;
+            vx_scalar num_lines = vxCreateScalar(ctx, VX_TYPE_SIZE, &zero);
+
+            vx_hough_lines_p_t params = {};
+            params.rho         = 1.0f;
+            params.theta       = 3.14159265f / 180.0f;
+            params.threshold   = 10;   // low threshold ⇒ easy detection
+            params.line_length = 20;
+            params.line_gap    = 5;
+            params.theta_min   = 0.0f;
+            params.theta_max   = 3.14159265f;
+
+            vx_graph g = vxCreateGraph(ctx);
+            vx_node n = fn(g, input, &params, lines, num_lines);
+            vx_status status = vxVerifyGraph(g);
+            if (status == VX_SUCCESS) status = vxProcessGraph(g);
+
+            bool ok = false;
+            if (status == VX_SUCCESS) {
+                // Query the array's actual item count (CTS approach).
+                vx_size n_items = 0;
+                vxQueryArray(lines, VX_ARRAY_NUMITEMS, &n_items, sizeof(n_items));
+                ok = (n_items >= 1);
+            } else {
+                ok = (status == VX_ERROR_NOT_SUPPORTED);
+            }
+
+            vxReleaseNode(&n); vxReleaseGraph(&g);
+            vxReleaseScalar(&num_lines); vxReleaseArray(&lines);
+            vxReleaseImage(&input);
+            return ok;
         };
         cases.push_back(bc);
     }

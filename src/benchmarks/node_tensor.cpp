@@ -202,16 +202,19 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            // 5 * 3 * scale=1.0 ⇒ expected 15 under "raw int16" semantics
-            // (AMD MIVisionX, Khronos sample). But rustVX (and any CTS-
-            // conformant impl) implements TensorMul with Q7.8 fixed-point
-            // semantics: prod = (a * b * scale) / 256 — so the same input
-            // yields ⌊15/256⌋ = 0. Both impls are within the spec since
-            // §3.49's "scale" semantics are intentionally flexible across
-            // fixed-point representations. Verify only checks "graph
-            // executed cleanly"; correctness lives in each impl's CTS suite.
+            // CTS-style structural check: pick inputs whose output is
+            // identical under every spec-compliant fixed-point
+            // semantics. `a * 0 = 0` works under all of:
+            //   - raw int16:        17 * 0 = 0
+            //   - Q7.8 fixed-point: (17 * 0) / 256 = 0
+            //   - any scale factor: (17 * 0 * scale) / k = 0
+            // So we can pin output==0 across all impls. This is the
+            // CTS pattern adapted from test_tensor_op.c — input
+            // patterns chosen so the expected result is invariant to
+            // the impl's internal fixed-point convention.
             vx_size dims[2] = {64, 64};
-            std::vector<int16_t> a_data(64 * 64, 5), b_data(64 * 64, 3);
+            std::vector<int16_t> a_data(64 * 64, 17);  // non-trivial
+            std::vector<int16_t> b_data(64 * 64,  0);  // zero ⇒ a*b=0
             vx_tensor t1 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor t2 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
@@ -235,7 +238,13 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             vxSetParameterByIndex(n, 5, (vx_reference)tout);
             vx_status status = vxVerifyGraph(g);
             if (status == VX_SUCCESS) status = vxProcessGraph(g);
-            bool ok = (status == VX_SUCCESS) || (status == VX_ERROR_NOT_SUPPORTED);
+            std::vector<int16_t> result(64 * 64, 99);  // sentinel pattern
+            vxCopyTensorPatch(tout, 2, starts, dims, strides, result.data(),
+                              VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            // Spot-check a few cells (any-element-zero ⇒ output all zero).
+            bool ok = (status != VX_SUCCESS) ? (status == VX_ERROR_NOT_SUPPORTED) :
+                      (result[0] == 0 && result[64 * 32 + 32] == 0 &&
+                       result[64 * 63 + 63] == 0);
             vxReleaseKernel(&k); vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseScalar(&scale); vxReleaseScalar(&overflow_policy); vxReleaseScalar(&rounding_policy);
             vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&tout);
@@ -283,6 +292,18 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
+            // CTS-style structural check: transpose just moves elements
+            // — no arithmetic, no Q7.8 quirk. Every spec-compliant impl
+            // must yield the same byte-exact swap. Input is a 4x2
+            // tensor with distinct values in each cell; after
+            // transpose(dim1=0, dim2=1) the output is 2x4 with cells
+            // swapped. We pin two specific cells:
+            //
+            //   in[col=0,row=0] = 1  ⇒  out[col=0,row=0] = 1   (corner unchanged)
+            //   in[col=1,row=0] = 2  ⇒  out[col=0,row=1] = 2   (swap happened)
+            //
+            // Following OpenVX tensor layout dims = {cols, rows},
+            // strides[0] = elem_size, strides[1] = elem_size * cols.
             auto fn = openvx_optional::tensorTransposeNode();
             if (!fn) return true;
             vx_size in_dims[2]  = {4, 2};
@@ -300,8 +321,11 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             int16_t out_data[8] = {};
             vx_size out_strides[2] = {sizeof(int16_t), 2 * sizeof(int16_t)};
             vxCopyTensorPatch(tout, 2, starts, out_dims, out_strides, out_data, VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
-            // in[col=1,row=0]=2 should become out[col=0,row=1]=2
-            bool ok = (status != VX_SUCCESS) ? true : (out_data[0] == 1 && out_data[2] == 2);
+            // out_data is row-major with cols=2: index = row * 2 + col
+            //   out[col=0,row=0] = out_data[0] should be in[col=0,row=0] = 1
+            //   out[col=0,row=1] = out_data[2] should be in[col=1,row=0] = 2
+            bool ok = (status != VX_SUCCESS) ? (status == VX_ERROR_NOT_SUPPORTED) :
+                      (out_data[0] == 1 && out_data[2] == 2);
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseTensor(&tin); vxReleaseTensor(&tout);
             return ok;
@@ -362,10 +386,19 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
+            // CTS-style structural check: input=0 with offset=0 yields
+            // output=0 under every spec-compliant interpretation of the
+            // conversion formula:
+            //   - "output = saturate(input * norm + offset)" (spec text):
+            //       saturate(0 * 1.0 + 0) = 0
+            //   - "output = saturate((input - offset) / norm)" (CTS ref):
+            //       saturate((0 - 0) / 1.0) = 0
+            //   - Q7.8 input interpretation:  0/256 → 0
+            // So we can pin output == 0 across all impls.
             auto fn = openvx_optional::tensorConvertDepthNode();
             if (!fn) return true;
             vx_size dims[2] = {64, 64};
-            std::vector<int16_t> in_data(64 * 64, 100);
+            std::vector<int16_t> in_data(64 * 64, 0);  // zero input ⇒ zero output
             vx_tensor tin  = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_UINT8, 0);
             vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 64 * sizeof(int16_t)};
@@ -378,15 +411,13 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
             vx_node n = fn(g, tin, VX_CONVERT_POLICY_SATURATE, norm, offset, tout);
             vx_status status = vxVerifyGraph(g);
             if (status == VX_SUCCESS) status = vxProcessGraph(g);
-            // Smoke check only — the exact U8 result depends on the
-            // norm semantics (multiplier vs divisor) and whether the
-            // impl treats INT16 as raw or Q7.8. See block comment
-            // above. Graph_setup + a non-error process is enough.
-            std::vector<uint8_t> result(64 * 64, 0);
+            std::vector<uint8_t> result(64 * 64, 99);  // sentinel != 0
             vx_size out_strides[2] = {sizeof(uint8_t), 64 * sizeof(uint8_t)};
             vxCopyTensorPatch(tout, 2, starts, dims, out_strides, result.data(),
                               VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
-            bool ok = (status != VX_SUCCESS) ? true : !result.empty();
+            bool ok = (status != VX_SUCCESS) ? (status == VX_ERROR_NOT_SUPPORTED) :
+                      (result[0] == 0 && result[64 * 32 + 32] == 0 &&
+                       result[64 * 63 + 63] == 0);
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseScalar(&norm); vxReleaseScalar(&offset);
             vxReleaseTensor(&tin); vxReleaseTensor(&tout);
@@ -475,35 +506,38 @@ std::vector<BenchmarkCase> registerTensorBenchmarks()
         };
         bc.immediate_func = nullptr;
         bc.verify_fn = [](vx_context ctx) -> bool {
-            // 2×2 · 2×2 matmul with a zero bias. Under "raw int16"
-            // semantics the result is A·B = A (identity multiply via the
-            // 1,0,0,1 layout). But rustVX (CTS-conformant) uses Q7.8
-            // fixed-point semantics — accumulator divides by 256 with
-            // round-to-nearest, so the same input yields zeros instead
-            // of 1/2/3/4. Both impls are spec-compliant; we therefore
-            // only verify "graph executed cleanly" here. Pass a real
-            // zero-filled bias tensor for the same NULL-safety reason
-            // as the graph_setup path above.
+            // CTS-style structural check: any A·0+0 = 0 across every
+            // spec-compliant fixed-point semantics:
+            //   - raw int16   : sum(a[i,k] * 0) + 0 = 0
+            //   - Q7.8        : ⌊sum(a[i,k] * 0)/256⌋ + 0 = 0
+            //   - any rounding/scale variant: 0 in, 0 out
+            // So we can pin output == 0 across all impls. Pass real
+            // zero-filled tensors for both B and bias to keep strict-
+            // FFI impls happy (see graph_setup rationale).
             auto fn = openvx_optional::tensorMatrixMultiplyNode();
             if (!fn) return true;
             vx_size dims[2] = {2, 2};
-            int16_t a[4] = {1, 2, 3, 4};
-            int16_t b[4] = {1, 0, 0, 1};
-            int16_t zero_bias[4] = {0, 0, 0, 0};
+            int16_t a[4] = {1, 2, 3, 4};       // non-trivial input A
+            int16_t zeros[4] = {0, 0, 0, 0};   // B = 0 ⇒ A·B = 0
             vx_tensor t1 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor t2 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor t3 = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_tensor tout = vxCreateTensor(ctx, 2, dims, VX_TYPE_INT16, 0);
             vx_size starts[2] = {0, 0}, strides[2] = {sizeof(int16_t), 2 * sizeof(int16_t)};
-            vxCopyTensorPatch(t1, 2, starts, dims, strides, a, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-            vxCopyTensorPatch(t2, 2, starts, dims, strides, b, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-            vxCopyTensorPatch(t3, 2, starts, dims, strides, zero_bias, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t1, 2, starts, dims, strides, a,     VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t2, 2, starts, dims, strides, zeros, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+            vxCopyTensorPatch(t3, 2, starts, dims, strides, zeros, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
             vx_tensor_matrix_multiply_params_t params = {};
             vx_graph g = vxCreateGraph(ctx);
             vx_node n = fn(g, t1, t2, t3, &params, tout);
             vx_status status = vxVerifyGraph(g);
             if (status == VX_SUCCESS) status = vxProcessGraph(g);
-            bool ok = (status == VX_SUCCESS) || (status == VX_ERROR_NOT_SUPPORTED);
+            int16_t result[4] = {99, 99, 99, 99};  // sentinel
+            vxCopyTensorPatch(tout, 2, starts, dims, strides, result,
+                              VX_READ_ONLY, VX_MEMORY_TYPE_HOST);
+            bool ok = (status != VX_SUCCESS) ? (status == VX_ERROR_NOT_SUPPORTED) :
+                      (result[0] == 0 && result[1] == 0 &&
+                       result[2] == 0 && result[3] == 0);
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseTensor(&t1); vxReleaseTensor(&t2); vxReleaseTensor(&t3); vxReleaseTensor(&tout);
             return ok;
