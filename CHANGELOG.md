@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — HOGFeatures vxProcessGraph UAF on raw-pointer params (rustVX)
+
+`HOGFeatures` was still failing on rustVX as `SKIPPED (vxProcessGraph
+failed during measurement)` after the previous chain fix. Root cause
+was different from the empty-tensor hypothesis I went after first —
+it's a **use-after-free on the `vx_hog_t` params struct itself**.
+
+OpenVX's typed helper `vxHOGFeaturesNode(graph, input, magnitudes,
+bins, params, hog_param_size, features)` takes `params` as a raw
+`const vx_hog_t*` — NOT a `vx_scalar` or `vx_reference`. Every impl
+stores that pointer verbatim in the node (there's no VX object type
+for a C struct, so no refcounted wrapper is possible), and the kernel
+dispatch dereferences it at `vxProcessGraph` time to read the HOG
+config.
+
+Our bench was creating `vx_hog_t params = {}` as a **stack local
+inside the graph_setup lambda**. graph_setup is called ONCE at bench
+init (not per iteration), so by the time the runner's vxProcessGraph
+loop runs, the params struct is freed stack memory:
+
+  - Lenient impls (AMD MIVisionX, when it would export the kernel):
+    happen to never read certain fields and survive on stale memory
+    by accident.
+  - Strict impls (rustVX in particular) deserialise every field —
+    `cell_width`, `cell_height`, ..., `threshold` — and read past
+    the freed-stack region, causing `vxProcessGraph` to return
+    non-success.
+
+Fix: heap-allocate the `vx_hog_t` via `std::shared_ptr<vx_hog_t>`
+created at bench-definition scope and captured by value in the
+graph_setup lambda. The shared_ptr lives as long as the
+`BenchmarkCase` (and therefore as long as the runner), so the
+params pointer the node holds is always valid. One allocation per
+bench definition, deterministically freed at runner shutdown. The
+verify_fn keeps its stack-local `vx_hog_t` since verify_fn runs
+vxVerifyGraph + vxProcessGraph synchronously inside the same call —
+no lifetime issue there.
+
+(The previous chained `HOGCells → HOGFeatures` fix in `4624647`
+also stays — magnitudes/bins still need to be populated by an
+upstream kernel for HOGFeatures to read non-zero data, and the
+chain ensures that.)
+
 ### Fixed — Last 3 rustVX enhanced_vision failures (MatchTemplate / HOGFeatures / HoughLinesP)
 
 Follow-up to the CTS-style verify_fn rewrite. Three benchmarks

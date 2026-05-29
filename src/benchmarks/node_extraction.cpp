@@ -31,6 +31,8 @@
 #include <VX/vx_nodes.h>
 #include <VX/vxu.h>
 #include <algorithm>
+#include <cstring>   // memset for heap-owned vx_hog_t params (HOGFeatures)
+#include <memory>    // shared_ptr capture for HOGFeatures params lifetime
 #include <vector>
 
 std::vector<BenchmarkCase> registerExtractionBenchmarks() {
@@ -335,13 +337,34 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
 
     // HOGFeatures — U8 + magnitudes + bins → HOG descriptor tensor
     {
+        // The vx_hog_t params struct must outlive graph_setup. Why:
+        // OpenVX's typed helper vxHOGFeaturesNode takes `params` as a
+        // raw `const vx_hog_t*` (NOT a vx_scalar / vx_reference), and
+        // every impl I've inspected stores that raw pointer verbatim
+        // in the node — there is no refcounted wrapper because there's
+        // no VX object type for a struct param. At vxProcessGraph time
+        // the impl dereferences the pointer to read the HOG config.
+        //
+        // If we put `vx_hog_t params` on graph_setup's stack, the
+        // pointer becomes dangling the moment graph_setup returns,
+        // and vxProcessGraph reads freed memory — manifests as
+        // "vxProcessGraph failed during measurement" on strict-FFI
+        // impls (rustVX especially, where deserialising the struct
+        // touches every field; lenient impls happen to never read
+        // certain fields and survive by accident).
+        //
+        // Wrap params in a shared_ptr captured by the graph_setup
+        // lambda so the struct lives as long as the BenchmarkCase
+        // (which owns the lambda). One allocation per bench
+        // definition, deterministically freed at runner shutdown.
+        auto params_owner = std::make_shared<vx_hog_t>();
         BenchmarkCase bc;
         bc.name = "HOGFeatures";
         bc.category = "extraction";
         bc.feature_set = "enhanced_vision";
         bc.kernel_enum = VX_KERNEL_HOG_FEATURES;
         bc.required_kernels = {VX_KERNEL_HOG_FEATURES};
-        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+        bc.graph_setup = [params_owner](vx_context ctx, vx_graph graph,
                             uint32_t width, uint32_t height,
                             TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
             constexpr vx_int32 CELL = 8;
@@ -387,7 +410,12 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             if (vxGetStatus((vx_reference)magnitudes) != VX_SUCCESS ||
                 vxGetStatus((vx_reference)bins) != VX_SUCCESS) return false;
 
-            vx_hog_t params = {};
+            // Populate the heap-owned params struct (lifetime extends
+            // beyond graph_setup via the shared_ptr captured above).
+            // Memset first so any padding bytes are deterministic
+            // across runs and impls.
+            std::memset(params_owner.get(), 0, sizeof(vx_hog_t));
+            vx_hog_t& params = *params_owner;
             params.cell_width    = CELL;
             params.cell_height   = CELL;
             params.block_width   = BLOCK;
