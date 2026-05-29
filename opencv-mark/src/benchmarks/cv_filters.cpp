@@ -196,6 +196,13 @@ std::vector<OpenCVBenchmarkCase> registerCvFilterBenchmarks() {
     }
 
     // CustomConvolution — U8 in, U8 out (3x3 CV_16S kernel)
+    //
+    // OpenVX 1.3.1 §3.16 [REQ-0147]: Convolve output may be U8 or S16.
+    // The CustomConvolution case below tests U8→U8 (with clamping to
+    // [0,255]); CustomConvolution_U8_S16 further down covers U8→S16
+    // (no clamping). cv::filter2D's `ddepth` argument selects the
+    // output type at the API level, so we get matching per-pixel work
+    // for each path.
     {
         OpenCVBenchmarkCase bc;
         bc.name = "CustomConvolution";
@@ -223,7 +230,41 @@ std::vector<OpenCVBenchmarkCase> registerCvFilterBenchmarks() {
         cases.push_back(bc);
     }
 
-    // NonLinearFilter — U8 in, U8 out, median mode with 3x3 all-ones mask.
+    // CustomConvolution_U8_S16 — U8 in, S16 out (3x3 CV_16S kernel)
+    {
+        OpenCVBenchmarkCase bc;
+        bc.name = "CustomConvolution_U8_S16";
+        bc.category = "filters";
+        bc.feature_set = "vision";
+        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+            bufs.input = gen.makeU8(w, h);
+            bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_16SC1);
+            bufs.input_extra = gen.makeConvolution3x3();
+            return true;
+        };
+        bc.run_fn = [](CaseBuffers& bufs) {
+            cv::filter2D(bufs.input, bufs.output, CV_16S, bufs.input_extra,
+                         cv::Point(-1, -1), 0, cv::BORDER_REPLICATE);
+        };
+        bc.verify_fn = []() -> bool {
+            cv::Mat in(64, 64, CV_8UC1, cv::Scalar(100));
+            cv::Mat k = cv::Mat::zeros(3, 3, CV_16SC1);
+            k.at<int16_t>(1, 1) = 1;
+            cv::Mat out;
+            cv::filter2D(in, out, CV_16S, k, cv::Point(-1, -1), 0, cv::BORDER_REPLICATE);
+            return out.at<int16_t>(32, 32) == 100;
+        };
+        cases.push_back(bc);
+    }
+
+    // NonLinearFilter — U8 in, U8 out, MEDIAN function, 3x3 mask.
+    //
+    // OpenVX 1.3.1 §3.38: vxNonLinearFilterNode selects one of MIN,
+    // MAX, MEDIAN over an arbitrary structuring mask. The OpenCV
+    // analogues are cv::erode (= MIN over the mask), cv::dilate (=
+    // MAX), and cv::medianBlur (= MEDIAN over a 3x3 box). We use the
+    // dedicated OpenCV ops because they are the same per-pixel work
+    // OpenVX would do under the hood for a 3x3 all-ones mask.
     {
         OpenCVBenchmarkCase bc;
         bc.name = "NonLinearFilter";
@@ -242,6 +283,59 @@ std::vector<OpenCVBenchmarkCase> registerCvFilterBenchmarks() {
             cv::Mat out;
             cv::medianBlur(in, out, 3);
             return out.at<uint8_t>(32, 32) == 100;
+        };
+        cases.push_back(bc);
+    }
+
+    // NonLinearFilter_Min — U8 in, U8 out, MIN function (= cv::erode with 3x3 rect SE)
+    {
+        OpenCVBenchmarkCase bc;
+        bc.name = "NonLinearFilter_Min";
+        bc.category = "filters";
+        bc.feature_set = "vision";
+        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+            bufs.input = gen.makeU8(w, h);
+            bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_8UC1);
+            return true;
+        };
+        bc.run_fn = [](CaseBuffers& bufs) {
+            static const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+            cv::erode(bufs.input, bufs.output, kernel, cv::Point(-1, -1), 1, cv::BORDER_REPLICATE);
+        };
+        bc.verify_fn = []() -> bool {
+            cv::Mat in(64, 64, CV_8UC1, cv::Scalar(200));
+            in.at<uint8_t>(32, 32) = 50;
+            cv::Mat out;
+            const cv::Mat k = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+            cv::erode(in, out, k, cv::Point(-1, -1), 1, cv::BORDER_REPLICATE);
+            // MIN over (32,32) window includes the value-50 pixel → output is 50.
+            return out.at<uint8_t>(32, 32) == 50;
+        };
+        cases.push_back(bc);
+    }
+
+    // NonLinearFilter_Max — U8 in, U8 out, MAX function (= cv::dilate with 3x3 rect SE)
+    {
+        OpenCVBenchmarkCase bc;
+        bc.name = "NonLinearFilter_Max";
+        bc.category = "filters";
+        bc.feature_set = "vision";
+        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+            bufs.input = gen.makeU8(w, h);
+            bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_8UC1);
+            return true;
+        };
+        bc.run_fn = [](CaseBuffers& bufs) {
+            static const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+            cv::dilate(bufs.input, bufs.output, kernel, cv::Point(-1, -1), 1, cv::BORDER_REPLICATE);
+        };
+        bc.verify_fn = []() -> bool {
+            cv::Mat in(64, 64, CV_8UC1, cv::Scalar(50));
+            in.at<uint8_t>(32, 32) = 200;
+            cv::Mat out;
+            const cv::Mat k = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+            cv::dilate(in, out, k, cv::Point(-1, -1), 1, cv::BORDER_REPLICATE);
+            return out.at<uint8_t>(32, 32) == 200;
         };
         cases.push_back(bc);
     }

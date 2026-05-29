@@ -1,3 +1,24 @@
+# --- Build outputs ---
 build/
+build-*/
+
+# --- Benchmark/comparison artefacts (regenerated on every run) ---
+benchmark_results/
+comparison-three-way/
+*.json.bak
+
+# --- Python / generated reports ---
 __pycache__/
 *.pyc
+
+# --- Editor / OS noise ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Local toolchain caches (in case CARGO_TARGET_DIR points inside repo) ---
+target/
+.cache/

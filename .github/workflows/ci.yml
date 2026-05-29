@@ -24,15 +24,46 @@ concurrency:
 #       1. Builds the implementation from source.
 #       2. Stages a self-contained artifact: <impl>-stage/lib + <impl>-stage/include.
 #       3. Builds openvx-mark against the just-built impl.
-#       4. Runs a quick smoke benchmark (`--feature-set everything --resolution VGA`)
-#          as a "local unit test" — catches build-link breakage and missing-symbol
-#          issues immediately, scoped to the specific impl, without waiting for
-#          the slower comparison job downstream.
+#       4. Runs a quick smoke benchmark as a "local unit test" — catches
+#          build-link breakage and missing-symbol issues immediately,
+#          scoped to the specific impl, without waiting for the slower
+#          comparison job downstream.
 #       5. Uploads the staged artifact for the comparison job to consume.
 #   * One OpenCV-baseline job (opencv-mark companion binary). Differs from
 #     the OpenVX jobs because OpenCV is apt-installable and opencv-mark has
 #     no OpenVX dependency — see the build-opencv job below for the shape.
 #     Stages its smoke JSON directly (no impl tarball needed).
+#
+# Per-impl feature-set policy
+# ---------------------------
+# Not every impl ships the full OpenVX 1.3.1 conformance surface, so each
+# bench is scoped to the feature sets that impl actually implements:
+#
+#   * MIVisionX     — `vision,framework`. AMD's runtime exports the 42
+#                     Vision Conformance kernels but **does NOT export
+#                     most of the 19 Enhanced Vision APIs** (Bilateral-
+#                     Filter, HOG*, Tensor*, Select, ScalarOperation,
+#                     etc.). With `enhanced_vision` enabled, the per-
+#                     benchmark dlsym shim in openvx_optional_apis.h
+#                     would dutifully report 19 SKIPPED rows, which is
+#                     accurate but uninformative noise on every run —
+#                     so we omit it.
+#   * Khronos sample — `vision,framework` + `enhanced_vision` split
+#                     across TWO invocations. CTS-conformant reference
+#                     impl, ships both profiles on paper, but the
+#                     sample-impl's enhanced_vision tensor kernels
+#                     (TensorAdd, TensorSub, ...) SIGSEGV inside
+#                     vxProcessGraph and take the whole bench process
+#                     down. The split (rock-solid set first, crash-
+#                     prone set second, merge via merge_reports.py)
+#                     guarantees we ALWAYS get vision+framework data
+#                     even when the enhanced_vision invocation dies.
+#   * rustVX        — `vision,enhanced_vision,framework`. CTS-conformant
+#                     for Vision (5923/5923) and Enhanced Vision
+#                     (1235/1235) per the rustVX README.
+#   * opencv-mark   — `vision,enhanced_vision` (no `framework`; cv:: has
+#                     no graph runtime to measure). All 79 + 19 = 98
+#                     OpenCV-side benchmarks run.
 #
 # Phase 2 (single job, depends on all four Phase-1 jobs) — comparison.
 #   1. Downloads all three OpenVX impl artifacts onto a single runner;
@@ -40,11 +71,13 @@ concurrency:
 #   2. Builds openvx-mark × 3 (one per OpenVX impl) so all binaries link
 #      against the same openvx-mark source tree at the same commit.
 #      Builds opencv-mark from the same source tree.
-#   3. Runs the full benchmark (`--feature-set vision[,framework]
-#      --resolution FHD`) against each impl. Same hardware = fair
-#      cross-vendor comparison. opencv-mark runs `vision` only — it
-#      deliberately doesn't implement the OpenVX `framework` feature
-#      set, and `compare_reports.py` ignores not-on-both-sides kernels.
+#   3. Runs the full benchmark against each impl using that impl's
+#      feature-set policy (above). Same hardware = fair cross-vendor
+#      comparison. `compare_reports.py` joins by (name, mode, resolution)
+#      and silently drops rows not on both sides, so enhanced_vision
+#      rows naturally appear in pairs where both impls produced them
+#      (Khronos↔OpenCV, rustVX↔OpenCV, Khronos↔rustVX) and are absent
+#      from MIVisionX↔* pairs.
 #   4. Generates six pairwise comparison reports:
 #        OpenVX-vs-OpenVX:
 #          * MIVisionX vs Khronos sample
@@ -162,13 +195,15 @@ jobs:
             ..
           cmake --build . -j$(nproc)
 
-      # Smoke covers the `vision` + `framework` feature sets — i.e.
-      # the comparison-stable subset that all three impls support
-      # uniformly. `enhanced_vision` is excluded because at least one
-      # impl (Khronos sample) segfaults inside Tensor* kernels, and
-      # since openvx-mark only writes its JSON at end-of-run a mid-bench
-      # crash takes out the entire signal. Re-enable per-impl gating
-      # later when those impl quirks are sorted upstream.
+      # Smoke covers the `vision` + `framework` feature sets only.
+      # MIVisionX's runtime exports the 42 Vision Conformance kernels
+      # but does NOT export most of the 19 Enhanced Vision APIs
+      # (BilateralFilter, HOG*, Tensor*, Select, ScalarOperation, etc.).
+      # With `enhanced_vision` enabled, the per-benchmark dlsym shim in
+      # openvx_optional_apis.h would dutifully report 19 SKIPPED rows
+      # on every run — accurate but uninformative noise. The Khronos
+      # sample, rustVX, and opencv-mark smoke jobs DO exercise
+      # `enhanced_vision` because those impls actually ship it.
       - name: Run smoke benchmark (vision + framework, VGA × 5 iters, single-threaded)
         # Smoke is advisory — if a specific impl crashes inside a
         # specific kernel the artifact upload (which the compare job
@@ -275,18 +310,52 @@ jobs:
             ..
           cmake --build . -j$(nproc)
 
-      # Smoke is restricted to the `vision` + `framework` subset for
-      # the same reason as the MIVisionX smoke — see comment there.
-      - name: Run smoke benchmark (vision + framework, VGA × 5 iters, single-threaded)
+      # Khronos sample is a CTS-conformant reference impl that ships
+      # both the Vision (42 kernels) and Enhanced Vision (19 kernels)
+      # profiles. In practice the enhanced_vision tensor kernels in
+      # the sample-impl are buggy at runtime — `TensorAdd` SIGSEGVs
+      # the moment we invoke `vxProcessGraph`, taking the whole bench
+      # process down with it and losing JSON output for every kernel
+      # that hadn't run yet (openvx-mark writes its report only at
+      # end-of-run).
+      #
+      # Workaround: split the smoke into TWO invocations along
+      # feature-set lines, each writing to its own output dir, then
+      # merge with scripts/merge_reports.py. The first invocation
+      # (vision + framework) is rock-solid and always produces a
+      # JSON. The second invocation (enhanced_vision) is the one that
+      # might crash — `|| true` keeps the step alive, and if it
+      # crashed, the merger silently skips its missing JSON. End
+      # result: we ALWAYS get the vision+framework smoke data, and
+      # we get enhanced_vision data when the sample impl cooperates.
+      # Step name quoted because the `(split: ...)` parenthesised list
+      # contains a colon, which YAML 1.2 would otherwise try to parse
+      # as a mapping separator inside the unquoted scalar.
+      - name: "Run smoke benchmark (split — vision+framework, then enhanced_vision, VGA × 5 iters)"
         continue-on-error: true
         run: |
           set -eo pipefail
           cd build-smoke
           export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
           ./openvx-mark --validate-timing
+          # 1. Rock-solid set first — always produces a JSON.
           ./openvx-mark --feature-set vision,framework \
             --resolution VGA --iterations 5 --warmup 1 --threads 1 \
-            --output-dir smoke-results
+            --output-dir smoke-results-base
+          # 2. Crash-prone set — `|| true` so the step survives a
+          #    SIGSEGV inside e.g. the Khronos sample's TensorAdd.
+          ./openvx-mark --feature-set enhanced_vision \
+            --resolution VGA --iterations 5 --warmup 1 --threads 1 \
+            --output-dir smoke-results-extra \
+            || echo "enhanced_vision smoke crashed (Khronos sample known issue) — vision results still saved"
+          # 3. Merge whichever JSONs survived into the final smoke
+          #    report. merge_reports.py handles the missing-input
+          #    case silently.
+          mkdir -p smoke-results
+          python3 ../scripts/merge_reports.py \
+            smoke-results-base/benchmark_results.json \
+            smoke-results-extra/benchmark_results.json \
+            --output smoke-results/benchmark_results.json
 
       - name: Upload Khronos sample artifact
         if: always()
@@ -406,16 +475,21 @@ jobs:
             ..
           cmake --build . -j$(nproc)
 
-      # Smoke is restricted to the `vision` + `framework` subset for
-      # the same reason as the MIVisionX smoke — see comment there.
-      - name: Run smoke benchmark (vision + framework, VGA × 5 iters, single-threaded)
+      # rustVX is CTS-conformant for both Vision (5923/5923) and
+      # Enhanced Vision (1235/1235), so we exercise the full
+      # `vision,enhanced_vision,framework` surface at smoke time. This
+      # is the impl that gives the headline "all 19 enhanced_vision
+      # kernels produce real measurements" cell in the comparison
+      # table — every other OpenVX backend either omits the profile
+      # (MIVisionX) or has known per-kernel quirks.
+      - name: Run smoke benchmark (vision + enhanced_vision + framework, VGA × 5 iters)
         continue-on-error: true
         run: |
           set -eo pipefail
           cd build-smoke
           export LD_LIBRARY_PATH=${{ steps.stage.outputs.lib_dir }}:${LD_LIBRARY_PATH:-}
           ./openvx-mark --validate-timing
-          ./openvx-mark --feature-set vision,framework \
+          ./openvx-mark --feature-set vision,enhanced_vision,framework \
             --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
 
@@ -493,12 +567,18 @@ jobs:
           # does not implement a dedicated `--version` flag yet.
           ./opencv-mark/opencv-mark --help | head -3
 
-      # Smoke covers the PR1 sentinel kernel set. Same shape as the
-      # OpenVX-impl smokes (VGA × 5 iters, 1 warmup) so timing noise
-      # stays comparable. Not continue-on-error — opencv-mark has no
-      # impl-side quirks to tolerate; if a kernel breaks here it's our
-      # bug.
-      - name: Run smoke benchmark (vision, VGA × 5 iters, single-threaded)
+      # Same shape as the OpenVX-impl smokes (VGA × 5 iters, 1 warmup)
+      # so timing noise stays comparable. Not continue-on-error —
+      # opencv-mark has no impl-side quirks to tolerate; if a kernel
+      # breaks here it's our bug.
+      #
+      # Feature-set: `vision,enhanced_vision`. opencv-mark has 1:1
+      # coverage of both profiles (42 vision + 19 enhanced = 61
+      # kernels) — that's the entire OpenCV-side surface this CI
+      # exercises. `framework` is intentionally omitted (OpenCV has
+      # no graph runtime to measure; the framework benches that
+      # depend on `vxProcessGraph` semantics are OpenVX-only).
+      - name: Run smoke benchmark (vision + enhanced_vision, VGA × 5 iters)
         run: |
           set -eo pipefail
           cd build-opencv
@@ -511,7 +591,7 @@ jobs:
           # comparable in shape to the cross-impl ones, even though
           # the smoke itself is just a "did it build & did it run?"
           # check, not a perf claim.
-          ./opencv-mark/opencv-mark --feature-set vision \
+          ./opencv-mark/opencv-mark --feature-set vision,enhanced_vision \
             --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
 
@@ -634,9 +714,19 @@ jobs:
       #     for opencv-mark and sets OMP_NUM_THREADS=1 in the env for
       #     anything OpenMP-using downstream.
       #
-      # Feature set is `vision,framework` (the comparison-stable subset
-      # — see the smoke step comments for why `enhanced_vision` is held
-      # back for now).
+      # Feature set is per-impl (see the architecture comment block
+      # at the top of this file for the full policy):
+      #   * MIVisionX     — `vision,framework` (no enhanced_vision;
+      #                     AMD's runtime doesn't export the APIs)
+      #   * Khronos sample — `vision,enhanced_vision,framework`
+      #   * rustVX        — `vision,enhanced_vision,framework`
+      #   * opencv-mark   — `vision,enhanced_vision` (no framework;
+      #                     OpenCV has no graph runtime to measure)
+      # `compare_reports.py` joins by (name, mode, resolution) and
+      # silently drops rows not on both sides, so enhanced_vision
+      # rows naturally appear in pairs where both impls produced them
+      # (Khronos↔OpenCV, rustVX↔OpenCV, Khronos↔rustVX) and are absent
+      # from MIVisionX↔* pairs.
       - name: Build & bench against MIVisionX (single-threaded, FHD × 20)
         if: always() && steps.detect.outputs.mivisionx == 'true'
         run: |
@@ -666,8 +756,24 @@ jobs:
 
       - name: Build & bench against Khronos sample (single-threaded, FHD × 20)
         if: always() && steps.detect.outputs.khronos == 'true'
+        # Khronos sample's enhanced_vision tensor kernels
+        # (TensorAdd, TensorSub, ...) SIGSEGV inside vxProcessGraph
+        # and take the whole bench process down — losing JSON output
+        # for every kernel that hadn't run yet (openvx-mark writes
+        # its report only at end-of-run). Same architecture as the
+        # split smoke step above: bench the rock-solid feature sets
+        # in their own invocation first (always produces a JSON),
+        # then bench enhanced_vision in a second invocation that's
+        # allowed to crash (`|| echo …`), and merge whichever JSONs
+        # survived into the final per-impl report consumed by the
+        # comparison phase downstream.
+        #
+        # `continue-on-error: true` is belt-and-suspenders — even if
+        # the merge step itself fails for some reason, the
+        # comparison job continues with whatever Khronos data it has.
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -eo pipefail
           mkdir -p build-khronos
           cd build-khronos
           cmake \
@@ -678,15 +784,41 @@ jobs:
           cmake --build . -j$(nproc)
           export LD_LIBRARY_PATH=${{ github.workspace }}/impl/khronos/lib:${LD_LIBRARY_PATH:-}
           ./openvx-mark --validate-timing
+          # 1. Rock-solid: vision (42 kernels) + framework benchmarks.
           ./openvx-mark --feature-set vision,framework \
             --resolution FHD --iterations 20 --warmup 5 --threads 1 \
-            --output-dir results
+            --output-dir results-base
+          # 2. Crash-prone: enhanced_vision (19 kernels). Note the
+          #    Khronos sample's HOG and tensor support is patchy —
+          #    HOGCells / HOGFeatures graph_setup tends to fail
+          #    cleanly (SKIPPED) but tensor kernels often SIGSEGV.
+          ./openvx-mark --feature-set enhanced_vision \
+            --resolution FHD --iterations 20 --warmup 5 --threads 1 \
+            --output-dir results-extra \
+            || echo "enhanced_vision FHD bench crashed (Khronos sample known issue) — vision+framework results still saved"
+          # 3. Merge into the canonical `results/` dir the downstream
+          #    comparison phase expects.
+          mkdir -p results
+          python3 ../scripts/merge_reports.py \
+            results-base/benchmark_results.json \
+            results-extra/benchmark_results.json \
+            --output results/benchmark_results.json
           ./openvx-mark --dump-outputs dump-khronos --seed 42 || true
 
       - name: Build & bench against rustVX (single-threaded, FHD × 20)
         if: always() && steps.detect.outputs.rustvx == 'true'
+        # rustVX is CTS-conformant for both Vision (5923/5923) and
+        # Enhanced Vision (1235/1235), so all 42 + 19 kernels should
+        # actually produce real measurements here. This row is the
+        # headline cell for "what does a fully-conformant OpenVX impl
+        # look like vs OpenCV on the same hardware?".
+        # `continue-on-error: true` is a belt-and-suspenders safety
+        # in case any one kernel surfaces a regression mid-bench —
+        # the artifact upload (which downstream comparisons depend
+        # on) must still happen.
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -eo pipefail
           mkdir -p build-rustvx
           cd build-rustvx
           cmake \
@@ -697,7 +829,7 @@ jobs:
           cmake --build . -j$(nproc)
           export LD_LIBRARY_PATH=${{ github.workspace }}/impl/rustvx/lib:${LD_LIBRARY_PATH:-}
           ./openvx-mark --validate-timing
-          ./openvx-mark --feature-set vision,framework \
+          ./openvx-mark --feature-set vision,enhanced_vision,framework \
             --resolution FHD --iterations 20 --warmup 5 --threads 1 \
             --output-dir results
           ./openvx-mark --dump-outputs dump-rustvx --seed 42 || true
@@ -706,11 +838,15 @@ jobs:
       # detect-step gate — it only needs `libopencv-dev` (already installed
       # above). Same FHD × 20 iter × 5 warmup × --threads 1 shape as the
       # OpenVX benches so per-kernel speedups are directly comparable.
-      # Feature-set is `vision` only — opencv-mark deliberately does not
-      # implement the `framework` set (OpenCV has no equivalent of the
-      # OpenVX graph framework concept), and `compare_reports.py` ignores
-      # not-on-both-sides kernels so the framework rows simply don't
-      # appear in OpenCV pairwise reports.
+      #
+      # Feature-set is `vision,enhanced_vision` — opencv-mark has 1:1
+      # coverage of both profiles (79 + 19 = 98 OpenCV-side benchmarks
+      # total). `framework` is intentionally omitted because OpenCV has
+      # no graph runtime to measure (the framework benches that depend
+      # on `vxProcessGraph` / virtual-image fusion semantics are
+      # OpenVX-only by design). `compare_reports.py` ignores rows that
+      # only exist on one side, so framework rows naturally don't
+      # appear in OpenCV pairwise tables.
       - name: Build & bench opencv-mark (single-threaded, FHD × 20)
         if: always()
         id: bench_opencv
@@ -723,7 +859,7 @@ jobs:
           test -x opencv-mark/opencv-mark \
             || { echo "ERROR: opencv-mark not built — OpenCV detection failed in compare job"; exit 1; }
           ./opencv-mark/opencv-mark --validate-timing
-          ./opencv-mark/opencv-mark --feature-set vision \
+          ./opencv-mark/opencv-mark --feature-set vision,enhanced_vision \
             --resolution FHD --iterations 20 --warmup 5 --threads 1 \
             --output-dir results
           ./opencv-mark/opencv-mark --dump-outputs dump-opencv --seed 42

@@ -175,6 +175,11 @@ std::vector<BenchmarkResult> BenchmarkRunner::runAll() {
 }
 
 BenchmarkResult BenchmarkRunner::runGraphMode(const BenchmarkCase& bc, const Resolution& res) {
+    // Fresh dedup window so each benchmark gets at least one verbatim
+    // copy of any [VX LOG] line a driver emits (e.g. AMD's repeated
+    // status=-14 on S16 LaplacianPyramid). See BenchmarkContext.
+    BenchmarkContext::resetLogDedup();
+
     BenchmarkResult result;
     result.name = bc.name;
     result.category = bc.category;
@@ -328,6 +333,9 @@ BenchmarkResult BenchmarkRunner::runGraphMode(const BenchmarkCase& bc, const Res
 }
 
 BenchmarkResult BenchmarkRunner::runImmediateMode(const BenchmarkCase& bc, const Resolution& res) {
+    // Fresh dedup window: see runGraphMode and BenchmarkContext.
+    BenchmarkContext::resetLogDedup();
+
     BenchmarkResult result;
     result.name = bc.name;
     result.category = bc.category;

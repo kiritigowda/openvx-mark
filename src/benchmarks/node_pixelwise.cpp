@@ -29,6 +29,7 @@
 #include "verify_utils.h"
 #include <VX/vx_nodes.h>
 #include <VX/vxu.h>
+#include <cstdlib>
 #include <vector>
 
 std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
@@ -184,7 +185,12 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
         cases.push_back(bc);
     }
 
-    // ---- AbsDiff ----
+    // ---- AbsDiff (U8 + U8 → U8) ----
+    //
+    // Vision Conformance Feature Set: AbsDiff has two required input
+    // combinations per the OpenVX 1.3 spec — (U8,U8)→U8 and (S16,S16)→S16.
+    // We benchmark each as a separate test because the two paths exercise
+    // distinct vectorization widths and different output stores.
     {
         BenchmarkCase bc;
         bc.name        = "AbsDiff";
@@ -222,7 +228,56 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
         cases.push_back(bc);
     }
 
-    // ---- Add ----
+    // ---- AbsDiff_S16 (S16 + S16 → S16) ----
+    {
+        BenchmarkCase bc;
+        bc.name        = "AbsDiff_S16";
+        bc.category    = "pixelwise";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_ABSDIFF;
+        bc.required_kernels = {VX_KERNEL_ABSDIFF};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image in1 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image in2 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image out = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_node node = vxAbsDiffNode(graph, in1, in2, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<int16_t> a(N, -200);
+            std::vector<int16_t> b(N,  300);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                               reinterpret_cast<const uint8_t*>(a.data()));
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                               reinterpret_cast<const uint8_t*>(b.data()));
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_status status = vxuAbsDiff(ctx, in1, in2, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImageS16(out, 64, 64);
+            // |-200 - 300| = 500
+            bool ok = !result.empty() && (result[0] == 500);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- Add (U8 + U8 → U8, saturate) ----
+    //
+    // Vision Conformance Feature Set: Add has five required input/output
+    // combinations per the OpenVX 1.3 spec —
+    //   (U8,U8)→U8, (U8,U8)→S16, (U8,S16)→S16, (S16,U8)→S16, (S16,S16)→S16
+    // and the saturate/wrap convert-policy. We benchmark the three most
+    // commonly-targeted shapes as separate tests (U8→U8 saturate, U8→S16
+    // and S16→S16) because the loops compile to different SIMD widths and
+    // memory traffic is different.
     {
         BenchmarkCase bc;
         bc.name        = "Add";
@@ -260,7 +315,91 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
         cases.push_back(bc);
     }
 
-    // ---- Subtract ----
+    // ---- Add_U8_U8_S16 (U8 + U8 → S16, wrap) ----
+    {
+        BenchmarkCase bc;
+        bc.name        = "Add_U8_U8_S16";
+        bc.category    = "pixelwise";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_ADD;
+        bc.required_kernels = {VX_KERNEL_ADD};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image in1 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_image in2 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_image out = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_node node = vxAddNode(graph, in1, in2, VX_CONVERT_POLICY_WRAP, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 200);
+            std::vector<uint8_t> b(N, 200);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_status status = vxuAdd(ctx, in1, in2, VX_CONVERT_POLICY_WRAP, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImageS16(out, 64, 64);
+            // 200 + 200 = 400 fits in S16 (would saturate in U8); proves S16 path
+            bool ok = !result.empty() && (result[0] == 400);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- Add_S16_S16_S16 (S16 + S16 → S16, saturate) ----
+    {
+        BenchmarkCase bc;
+        bc.name        = "Add_S16_S16_S16";
+        bc.category    = "pixelwise";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_ADD;
+        bc.required_kernels = {VX_KERNEL_ADD};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image in1 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image in2 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image out = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_node node = vxAddNode(graph, in1, in2, VX_CONVERT_POLICY_SATURATE, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<int16_t> a(N, -1000);
+            std::vector<int16_t> b(N,  4000);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                               reinterpret_cast<const uint8_t*>(a.data()));
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                               reinterpret_cast<const uint8_t*>(b.data()));
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_status status = vxuAdd(ctx, in1, in2, VX_CONVERT_POLICY_SATURATE, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImageS16(out, 64, 64);
+            bool ok = !result.empty() && (result[0] == 3000);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- Subtract (U8 - U8 → U8, saturate) ----
+    //
+    // Vision Conformance Feature Set: Subtract has the same five required
+    // input/output combinations as Add — (U8,U8)→U8, (U8,U8)→S16,
+    // (U8,S16)→S16, (S16,U8)→S16, (S16,S16)→S16. Saturate and wrap
+    // convert-policies are both required.
     {
         BenchmarkCase bc;
         bc.name        = "Subtract";
@@ -298,7 +437,94 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
         cases.push_back(bc);
     }
 
-    // ---- Multiply ----
+    // ---- Subtract_U8_U8_S16 (U8 - U8 → S16, wrap) ----
+    {
+        BenchmarkCase bc;
+        bc.name        = "Subtract_U8_U8_S16";
+        bc.category    = "pixelwise";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_SUBTRACT;
+        bc.required_kernels = {VX_KERNEL_SUBTRACT};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image in1 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_image in2 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_image out = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_node node = vxSubtractNode(graph, in1, in2, VX_CONVERT_POLICY_WRAP, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 50);
+            std::vector<uint8_t> b(N, 200);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_status status = vxuSubtract(ctx, in1, in2, VX_CONVERT_POLICY_WRAP, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImageS16(out, 64, 64);
+            // 50 - 200 = -150, which is representable in S16 (would underflow in U8)
+            bool ok = !result.empty() && (result[0] == -150);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- Subtract_S16_S16_S16 (S16 - S16 → S16, saturate) ----
+    {
+        BenchmarkCase bc;
+        bc.name        = "Subtract_S16_S16_S16";
+        bc.category    = "pixelwise";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_SUBTRACT;
+        bc.required_kernels = {VX_KERNEL_SUBTRACT};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image in1 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image in2 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image out = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_node node = vxSubtractNode(graph, in1, in2, VX_CONVERT_POLICY_SATURATE, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<int16_t> a(N,  5000);
+            std::vector<int16_t> b(N,  2000);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                               reinterpret_cast<const uint8_t*>(a.data()));
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                               reinterpret_cast<const uint8_t*>(b.data()));
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_status status = vxuSubtract(ctx, in1, in2, VX_CONVERT_POLICY_SATURATE, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImageS16(out, 64, 64);
+            bool ok = !result.empty() && (result[0] == 3000);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- Multiply (U8 * U8 → U8, scale=1, saturate, round-to-zero) ----
+    //
+    // Vision Conformance Feature Set: Multiply has the same five required
+    // input/output combinations as Add/Subtract, plus a float scale, both
+    // convert policies (saturate/wrap) and both round policies
+    // (to-zero/to-nearest-even). We benchmark the U8→U8 (saturate),
+    // U8→S16 (wrap, scale=1) and S16→S16 (saturate, scale=1/255 → "alpha
+    // blend"-style) shapes as separate tests since they exercise
+    // meaningfully different ALU paths.
     {
         BenchmarkCase bc;
         bc.name        = "Multiply";
@@ -335,6 +561,98 @@ std::vector<BenchmarkCase> registerPixelwiseBenchmarks()
             if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
             auto result = verify::readImage(out, 64, 64);
             bool ok = (result[0] == 50);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- Multiply_U8_U8_S16 (U8 * U8 → S16, scale=1, wrap, round-to-zero) ----
+    {
+        BenchmarkCase bc;
+        bc.name        = "Multiply_U8_U8_S16";
+        bc.category    = "pixelwise";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_MULTIPLY;
+        bc.required_kernels = {VX_KERNEL_MULTIPLY};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image in1 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_image in2 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
+            vx_image out = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_float32 scale_val = 1.0f;
+            vx_scalar scale = tracker.trackScalar(
+                vxCreateScalar(ctx, VX_TYPE_FLOAT32, &scale_val));
+            vx_node node = vxMultiplyNode(graph, in1, in2, scale,
+                                          VX_CONVERT_POLICY_WRAP,
+                                          VX_ROUND_POLICY_TO_ZERO, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<uint8_t> a(N, 200);
+            std::vector<uint8_t> b(N, 100);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, b.data());
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_status status = vxuMultiply(ctx, in1, in2, 1.0f, VX_CONVERT_POLICY_WRAP, VX_ROUND_POLICY_TO_ZERO, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImageS16(out, 64, 64);
+            // 200 * 100 = 20000 fits in S16; would saturate to 255 in U8 path.
+            bool ok = !result.empty() && (result[0] == 20000);
+            vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
+            return ok;
+        };
+        cases.push_back(bc);
+    }
+
+    // ---- Multiply_S16_S16_S16 (S16 * S16 → S16, scale=1/255, saturate, round-nearest) ----
+    {
+        BenchmarkCase bc;
+        bc.name        = "Multiply_S16_S16_S16";
+        bc.category    = "pixelwise";
+        bc.feature_set = "vision";
+        bc.kernel_enum = VX_KERNEL_MULTIPLY;
+        bc.required_kernels = {VX_KERNEL_MULTIPLY};
+        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+                            uint32_t width, uint32_t height,
+                            TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
+            vx_image in1 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image in2 = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_image out = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_S16));
+            vx_float32 scale_val = 1.0f / 255.0f;
+            vx_scalar scale = tracker.trackScalar(
+                vxCreateScalar(ctx, VX_TYPE_FLOAT32, &scale_val));
+            vx_node node = vxMultiplyNode(graph, in1, in2, scale,
+                                          VX_CONVERT_POLICY_SATURATE,
+                                          VX_ROUND_POLICY_TO_NEAREST_EVEN, out);
+            if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
+            tracker.trackNode(node);
+            return true;
+        };
+        bc.immediate_func = nullptr;
+        bc.verify_fn = [](vx_context ctx) -> bool {
+            const int N = 64 * 64;
+            std::vector<int16_t> a(N, 255);
+            std::vector<int16_t> b(N, 200);
+            vx_image in1 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                               reinterpret_cast<const uint8_t*>(a.data()));
+            vx_image in2 = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_S16,
+                                               reinterpret_cast<const uint8_t*>(b.data()));
+            if (!in1 || !in2) { if (in1) vxReleaseImage(&in1); if (in2) vxReleaseImage(&in2); return true; }
+            vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_S16);
+            vx_status status = vxuMultiply(ctx, in1, in2, 1.0f / 255.0f,
+                                           VX_CONVERT_POLICY_SATURATE,
+                                           VX_ROUND_POLICY_TO_NEAREST_EVEN, out);
+            if (status != VX_SUCCESS) { vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out); return true; }
+            auto result = verify::readImageS16(out, 64, 64);
+            // 255 * 200 / 255 = 200, allow ±1 for rounding
+            bool ok = !result.empty() && (std::abs(result[0] - 200) <= 1);
             vxReleaseImage(&in1); vxReleaseImage(&in2); vxReleaseImage(&out);
             return ok;
         };

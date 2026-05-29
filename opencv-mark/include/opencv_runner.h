@@ -107,6 +107,10 @@ std::vector<OpenCVBenchmarkCase> registerCvStatisticalBenchmarks();
 std::vector<OpenCVBenchmarkCase> registerCvMiscBenchmarks();
 std::vector<OpenCVBenchmarkCase> registerCvMultiscaleBenchmarks();
 std::vector<OpenCVBenchmarkCase> registerCvFeatureBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvExtractionBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvTensorBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvVisionPipelines();
+std::vector<OpenCVBenchmarkCase> registerCvFeaturePipelines();
 
 } // namespace opencv_mark
 

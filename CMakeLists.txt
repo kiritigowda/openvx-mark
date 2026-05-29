@@ -61,16 +61,43 @@ endif()
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 # Find OpenVX (vendor-agnostic)
+#
+# Supported runtimes (auto-detected):
+#   * AMD MIVisionX     — libopenvx.so + libvxu.so (default at ROCM_PATH=/opt/rocm)
+#   * Khronos sample    — libopenvx.so + libvxu.so
+#   * rustVX            — libopenvx_ffi.so   (single shared library that
+#                          exports the full vx*/vxu* symbol set; both
+#                          `OpenVX_openvx_LIBRARY` and `OpenVX_vxu_LIBRARY`
+#                          resolve to the same .so/.dylib)
+#   * Custom            — any impl that exports the vx*/vxu* C API; point
+#                          CMake at it via -DOPENVX_INCLUDES and
+#                          -DOPENVX_LIB_DIR.
 if(OPENVX_INCLUDES AND OPENVX_LIB_DIR)
-    # User provided explicit paths
+    # User provided explicit paths. We search for the openvx symbol set
+    # under both the standard MIVisionX/Khronos names (`openvx`, `vxu`)
+    # AND under rustVX's name (`openvx_ffi`). If only `openvx_ffi` is
+    # present, we use it for both since rustVX bundles the immediate-
+    # mode `vxu*` entry points into the same shared library.
     set(OpenVX_INCLUDE_DIR ${OPENVX_INCLUDES})
-    find_library(OpenVX_openvx_LIBRARY NAMES openvx HINTS ${OPENVX_LIB_DIR})
-    find_library(OpenVX_vxu_LIBRARY NAMES vxu HINTS ${OPENVX_LIB_DIR})
+    find_library(OpenVX_openvx_LIBRARY
+        NAMES openvx openvx_ffi HINTS ${OPENVX_LIB_DIR})
+    find_library(OpenVX_vxu_LIBRARY
+        NAMES vxu openvx_ffi      HINTS ${OPENVX_LIB_DIR})
     if(OpenVX_openvx_LIBRARY AND OpenVX_vxu_LIBRARY)
         set(OpenVX_FOUND TRUE)
-        set(OpenVX_LIBRARIES ${OpenVX_openvx_LIBRARY} ${OpenVX_vxu_LIBRARY})
+        # De-duplicate when the two resolve to the same file (rustVX
+        # case) so the linker doesn't see a redundant `-l` entry.
+        if(OpenVX_openvx_LIBRARY STREQUAL OpenVX_vxu_LIBRARY)
+            set(OpenVX_LIBRARIES ${OpenVX_openvx_LIBRARY})
+            message("-- OpenVX: single-library backend detected "
+                    "(rustVX-style); using ${OpenVX_openvx_LIBRARY} "
+                    "for both openvx and vxu symbols")
+        else()
+            set(OpenVX_LIBRARIES ${OpenVX_openvx_LIBRARY} ${OpenVX_vxu_LIBRARY})
+        endif()
     else()
-        message(FATAL_ERROR "Could not find openvx/vxu libraries in ${OPENVX_LIB_DIR}")
+        message(FATAL_ERROR "Could not find openvx/vxu (or openvx_ffi) "
+                            "libraries in ${OPENVX_LIB_DIR}")
     endif()
 else()
     # Try FindOpenVX module with standard search paths

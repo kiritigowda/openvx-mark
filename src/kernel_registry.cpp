@@ -61,6 +61,7 @@ void KernelRegistry::initCatalog() {
     registerKernel(VX_KERNEL_GAUSSIAN_PYRAMID, "GaussianPyramid", "Gaussian Pyramid", "multiscale", "vision");
 #if OPENVX_HAS_1_1
     registerKernel(VX_KERNEL_LAPLACIAN_PYRAMID, "LaplacianPyramid", "Laplacian Pyramid", "multiscale", "vision");
+    registerKernel(VX_KERNEL_LAPLACIAN_RECONSTRUCT, "LaplacianReconstruct", "Laplacian Reconstruct", "multiscale", "vision");
 #endif
     registerKernel(VX_KERNEL_HALFSCALE_GAUSSIAN, "HalfScaleGaussian", "Half-Scale Gaussian", "multiscale", "vision");
 
