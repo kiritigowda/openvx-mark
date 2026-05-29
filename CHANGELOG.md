@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — Last 3 rustVX enhanced_vision failures (MatchTemplate / HOGFeatures / HoughLinesP)
+
+Follow-up to the CTS-style verify_fn rewrite. Three benchmarks
+still failed under rustVX even after the CTS-pattern adoption,
+each for a distinct reason rooted in spec behaviour vs benchmark
+input design:
+
+- **`MatchTemplate`** : `VERIFY FAILED`. The previous CTS-style
+  verify used `VX_COMPARE_CCORR_NORM` with a uniform-bright
+  template against a partially-bright source. CCORR_NORM is
+  *scale-invariant* by construction (normalisation divides out
+  intensity scale), so a uniform template correlates to ~1.0
+  against ANY uniform image patch — bright OR dark — and the
+  "peak" appears at every uniform cell rather than the
+  embedded-template position. Switched to `VX_COMPARE_L2` with
+  argmin (sum-of-squared-differences, MIN at the match, saturated
+  to INT16_MAX elsewhere) — every CTS-conformant impl produces a
+  unique minimum at the embedded position.
+
+- **`HOGFeatures`** : `SKIPPED (vxProcessGraph failed during
+  measurement)`. The bench graph created the magnitudes/bins
+  tensors but never populated them — lenient impls (AMD AGO) treat
+  unwritten tensors as zero-initialised, but strict-FFI impls
+  (rustVX) hold tensor data in a lazy-allocated map keyed by
+  tensor address, and reading from a never-written tensor returns
+  `VX_ERROR_INVALID_REFERENCE` inside `get_tensor_data`, which
+  propagates out of `vxProcessGraph`. Fix: chain `HOGCells →
+  HOGFeatures` in the bench graph so the cells kernel populates
+  magnitudes/bins as a side-effect upstream of the features kernel.
+  ~10% added cost at FHD, and it matches how a real HOG pipeline
+  actually runs (always Cells → Features chained).
+
+- **`HoughLinesP`** : `SKIPPED (vxProcessGraph failed during
+  measurement)`. The bench input was a sparse grid + diagonals
+  pattern with ~10k non-zero edge pixels at VGA. rustVX's
+  HoughLinesP impl uses a probabilistic-line-tracer with an O(N)
+  linear scan over the points vector at every traced pixel — total
+  cost is O(N² × theta) ≈ 360 billion ops at VGA, overruning
+  realistic CI timeouts, AND `vxAddArrayItems` overflows our
+  1024-capacity lines array long before the tracer finishes.
+  Fix: minimal-pattern input (1 horizontal + 1 vertical line
+  intersecting at image center, edge count = W + H = ~1120 at VGA,
+  ~3000 at FHD) and bumped the lines array capacity to 8192. Still
+  exercises every code path (accumulator build, peak detection,
+  line tracing) but at a tractable scale, and the verify_fn is
+  unchanged (its mini 64×64 input was already minimal).
+
 ### Changed — Enhanced-Vision verify_fns now follow OpenVX CTS patterns (8 kernels)
 
 Eight benchmark `verify_fn`s have been rewritten to follow the

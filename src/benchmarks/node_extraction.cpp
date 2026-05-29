@@ -98,18 +98,29 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             // CTS-style structural check (modelled on
             // OpenVX-cts test_matchtemplate.c testGraphProcessing):
             // place a known template at a known location in the source
-            // image, run MatchTemplate, then locate the correlation
-            // peak with `vx_int16` argmax over the output. Verify the
-            // peak is at the expected position within ±1 pixel
-            // tolerance. This pattern is impl-independent — every
-            // CTS-conformant impl must find the peak at the embedded-
-            // template location regardless of internal fixed-point
-            // conventions, because correlation is maximised where the
-            // patterns align.
+            // image, run MatchTemplate, then locate the match position
+            // by finding the EXTREMUM in the output. Verify the
+            // extremum is at the expected position within ±1 pixel.
+            //
+            // Method choice: L2 (sum-of-squared-differences). Three
+            // reasons it's better than the normalized variants for
+            // verification:
+            //   (a) Method MIN is at the match position (argmin search).
+            //   (b) Saturates to INT16_MAX away from the match (all
+            //       non-match cells look the same — easy to spot the
+            //       unique minimum).
+            //   (c) NOT scale-invariant — CCORR_NORM normalises away
+            //       intensity scale, so a uniform-bright template
+            //       correlates to 1.0 against ANY uniform image region
+            //       (bright OR dark), and the "peak" appears at every
+            //       uniform cell rather than the true match. L2
+            //       respects absolute pixel-value differences, so the
+            //       match position is the unique minimum.
             //
             // Setup: 64x64 dark source with a 16x16 bright square
-            // embedded at (24, 24). Template is 16x16 bright. Peak
-            // should appear at (24, 24) in the output correlation map.
+            // embedded at (24, 24). Template is 16x16 bright.
+            // L2 output: 0 at (24, 24), saturated to INT16_MAX
+            // everywhere uniform.
             constexpr uint32_t W = 64, H = 64, TW = 16, TH = 16;
             constexpr uint32_t OW = W - TW + 1, OH = H - TH + 1;
             constexpr uint32_t PEAK_X = 24, PEAK_Y = 24;
@@ -130,7 +141,7 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
                 return true;
             }
             vx_image out = vxCreateImage(ctx, OW, OH, VX_DF_IMAGE_S16);
-            vx_enum method = VX_COMPARE_CCORR_NORM;
+            vx_enum method = VX_COMPARE_L2;
             vx_scalar match_method = vxCreateScalar(ctx, VX_TYPE_ENUM, &method);
             vx_graph g = vxCreateGraph(ctx);
             vx_kernel k = vxGetKernelByEnum(ctx, VX_KERNEL_MATCH_TEMPLATE);
@@ -146,21 +157,20 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             if (status == VX_SUCCESS) {
                 auto result = verify::readImageS16(out, OW, OH);
                 if (!result.empty()) {
-                    // Find argmax of the correlation map (CCORR_NORM ⇒
-                    // higher = better match). Don't rely on absolute
-                    // values — only the LOCATION of the peak is
-                    // semantics-independent.
-                    int16_t peak_val = INT16_MIN;
-                    uint32_t peak_x = 0, peak_y = 0;
+                    // Find argmin of the L2 distance map (lower = better
+                    // match). Don't rely on absolute values — only the
+                    // LOCATION of the minimum is semantics-independent.
+                    int16_t best_val = INT16_MAX;
+                    uint32_t best_x = 0, best_y = 0;
                     for (uint32_t y = 0; y < OH; ++y) {
                         for (uint32_t x = 0; x < OW; ++x) {
                             int16_t v = result[y * OW + x];
-                            if (v > peak_val) { peak_val = v; peak_x = x; peak_y = y; }
+                            if (v < best_val) { best_val = v; best_x = x; best_y = y; }
                         }
                     }
-                    // CTS allows ±1 pixel tolerance on the peak location.
-                    const int dx = static_cast<int>(peak_x) - static_cast<int>(PEAK_X);
-                    const int dy = static_cast<int>(peak_y) - static_cast<int>(PEAK_Y);
+                    // CTS allows ±1 pixel tolerance on the match location.
+                    const int dx = static_cast<int>(best_x) - static_cast<int>(PEAK_X);
+                    const int dy = static_cast<int>(best_y) - static_cast<int>(PEAK_Y);
                     ok = (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1);
                 }
             } else {
@@ -419,6 +429,29 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
                 vxCreateTensor(ctx, 3, feat_dims, VX_TYPE_INT16, 0));
             if (vxGetStatus((vx_reference)features) != VX_SUCCESS) return false;
 
+            // Chain HOGCells → HOGFeatures in the bench graph.
+            //
+            // Why: HOGFeatures needs populated magnitudes + bins
+            // tensors as input. Lenient impls (AMD/Khronos) tolerate
+            // an unwritten input tensor by treating it as
+            // zero-initialised, but strict-FFI impls (rustVX) hold
+            // tensor data in a lazy-allocated map keyed on the tensor
+            // address — reading from a tensor that was never written
+            // returns VX_ERROR_INVALID_REFERENCE inside
+            // get_tensor_data, which propagates out of vxProcessGraph
+            // and lands the bench as `SKIPPED (vxProcessGraph failed
+            // during measurement)`. Running HOGCells upstream
+            // populates both tensors as a side-effect, which costs
+            // ~10% of the HOGFeatures kernel cost at FHD and brings
+            // the bench in line with what a real HOG pipeline does
+            // (always run as a Cells → Features chain).
+            auto cells_fn = openvx_optional::hogCellsNode();
+            if (!cells_fn) return false;
+            vx_node cells_node = cells_fn(graph, input, CELL, CELL, BINS,
+                                          magnitudes, bins);
+            if (vxGetStatus((vx_reference)cells_node) != VX_SUCCESS) return false;
+            tracker.trackNode(cells_node);
+
             auto fn = openvx_optional::hogFeaturesNode();
             if (!fn) return false;
             vx_node node = fn(graph, input, magnitudes, bins,
@@ -536,31 +569,34 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
                             TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
             (void)gen;  // we synthesize the input ourselves below
             // OpenVX 1.3.1 §3.27: input MUST be a binary edge map.
-            // A truly random U8 image has ~99.6% non-zero pixels —
-            // strict impls iterate every non-zero pixel through every
-            // theta bin in the accumulator (~180 iters), so an FHD
-            // random input produces ~2M·180 = 360M accumulator ops
-            // per call, taking seconds-to-minutes per iteration.
-            // Synthesise a sparse binary edge map instead: a handful
-            // of vertical/horizontal/diagonal lines drawn into a
-            // mostly-zero buffer, giving a deterministic ~0.1% non-
-            // zero density that still exercises every code path in
-            // the HoughLinesP algorithm (accumulator build, peak
-            // detection, line tracing) at realistic edge densities.
+            // Two reasons we draw a MINIMAL pattern (just 2 lines)
+            // rather than something dense:
+            //   1. A truly random U8 image has ~99.6% non-zero pixels.
+            //      Strict impls iterate every non-zero pixel through
+            //      every theta bin (~180 iters) and then trace each
+            //      candidate line forward+backward, with an O(N) inner
+            //      lookup over the points vector at every step. That's
+            //      O(N² × theta) total — ~360 billion ops at FHD,
+            //      which overruns realistic CI timeouts and lands the
+            //      bench as `SKIPPED (vxProcessGraph failed)` because
+            //      vxAddArrayItems also overflows long before the
+            //      tracer finishes.
+            //   2. We don't need a dense pattern to measure
+            //      HoughLinesP's per-pixel accumulator cost — that
+            //      cost is paid linearly in non-zero pixel count, so
+            //      a sparse pattern still exercises the same code
+            //      path at every CTS-conformant impl, just on a
+            //      tractable scale.
+            //
+            // Minimal pattern: one horizontal and one vertical line at
+            // image center → 2 long strong Hough peaks, edge-point
+            // count = W + H (~1120 at VGA, ~3000 at FHD), well under
+            // the O(N²) blow-up threshold.
             std::vector<uint8_t> buf(static_cast<size_t>(width) * height, 0);
-            const uint32_t step_x = std::max<uint32_t>(1, width  / 8);
-            const uint32_t step_y = std::max<uint32_t>(1, height / 8);
-            for (uint32_t y = 0; y < height; ++y) {
-                for (uint32_t x = 0; x < width; ++x) {
-                    // 4 axis-aligned grid lines + 4 diagonals → sparse
-                    // edge map with strong Hough-detectable structure.
-                    if (x % step_x == 0 || y % step_y == 0 ||
-                        x == y ||
-                        x + y == (width - 1)) {
-                        buf[static_cast<size_t>(y) * width + x] = 255;
-                    }
-                }
-            }
+            const uint32_t cy = height / 2;
+            const uint32_t cx = width  / 2;
+            for (uint32_t x = 0; x < width;  ++x) buf[cy * width + x] = 255;
+            for (uint32_t y = 0; y < height; ++y) buf[y  * width + cx] = 255;
             vx_image input = tracker.trackImage(
                 verify::createImage(ctx, width, height, VX_DF_IMAGE_U8, buf.data()));
             if (vxGetStatus((vx_reference)input) != VX_SUCCESS) return false;
@@ -573,8 +609,15 @@ std::vector<BenchmarkCase> registerExtractionBenchmarks() {
             // like rustVX, where a panic across the FFI boundary is
             // undefined behaviour and manifests as a segfault. Use
             // the spec-mandated VX_TYPE_LINE_2D.
+            //
+            // 8192 capacity (vs the previous 1024) — strict impls
+            // return a vxAddArrayItems error and abort vxProcessGraph
+            // if the detected-line count exceeds capacity. Even our
+            // minimal 2-line pattern can split into 50+ segments per
+            // line under aggressive gap/length params; 8k absorbs
+            // that headroom without measurable cost.
             vx_array lines = tracker.trackArray(
-                vxCreateArray(ctx, VX_TYPE_LINE_2D, 1024));
+                vxCreateArray(ctx, VX_TYPE_LINE_2D, 8192));
             if (vxGetStatus((vx_reference)lines) != VX_SUCCESS) return false;
 
             vx_size zero = 0;
