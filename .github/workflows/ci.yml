@@ -328,7 +328,10 @@ jobs:
       # crashed, the merger silently skips its missing JSON. End
       # result: we ALWAYS get the vision+framework smoke data, and
       # we get enhanced_vision data when the sample impl cooperates.
-      - name: Run smoke benchmark (split: vision+framework, then enhanced_vision, VGA × 5 iters)
+      # Step name quoted because the `(split: ...)` parenthesised list
+      # contains a colon, which YAML 1.2 would otherwise try to parse
+      # as a mapping separator inside the unquoted scalar.
+      - name: "Run smoke benchmark (split — vision+framework, then enhanced_vision, VGA × 5 iters)"
         continue-on-error: true
         run: |
           set -eo pipefail
