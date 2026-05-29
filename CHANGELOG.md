@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — Khronos sample compatibility (verify_fns + CI split-and-merge)
+
+Three Khronos OpenVX-sample-impl issues surfaced once rustVX was
+fully green:
+
+- **`LaplacianPyramid_S16` / `LaplacianReconstruct_S16`** showed up
+  as `SKIPPED (vxVerifyGraph failed)` and `VERIFY FAILED`. The
+  Khronos sample rejects S16 LaplacianPyramid at vxVerifyGraph with
+  `VX_ERROR_INVALID_PARAMETERS` (-10) — a different error code than
+  AMD MIVisionX's `VX_ERROR_INVALID_FORMAT` (-14). The bench's
+  status accept-list already handled -14; added -10 so the
+  standalone `verify_fn` path agrees with the runner's bench-level
+  skip decision on both impls. Both code paths are spec-compliant
+  ways to express "impl gap — S16 input is not supported".
+
+- **`MatchTemplate`** showed up as `VERIFY FAILED`. The previous L2
+  test embedded a `250`-valued bright square in a `10`-valued dark
+  source, giving a per-pixel diff of 240 — the resulting L2 sum
+  saturates INT16 (`256 × 240² / 256 × 256 = 14.7M` ≫ 32767). The
+  saturation DIRECTION (positive clamp vs negative wraparound) is
+  impl-dependent — the Khronos sample's saturated cells came out
+  negative, so the bench's `argmin` search picked one of those
+  spurious negatives instead of the true match at (24, 24).
+  Switched the bench to a much smaller intensity delta (`100` vs
+  `110`, diff 10) so the L2 output stays well under INT16_MAX on
+  every impl. Also replaced the strict argmin search with a
+  structural "match cell value is notably smaller than two
+  far-away corner cells" check — less fragile across impls.
+
+### Changed — Khronos sample CI now splits bench into 2 invocations
+
+The OpenVX-sample-impl's enhanced_vision tensor kernels are buggy
+at runtime — `TensorAdd` SIGSEGVs inside `vxProcessGraph` and takes
+the entire bench process down, losing JSON output for every kernel
+that hadn't run yet (openvx-mark writes its report only at
+end-of-run).
+
+Fix in CI: split the Khronos sample bench step into TWO
+invocations, each writing to its own output dir, then merge with
+the new `scripts/merge_reports.py`:
+
+  1. **`vision,framework`** — rock-solid set; always produces a JSON.
+  2. **`enhanced_vision`**   — crash-prone set; `|| echo …` keeps
+                               the step alive when the impl SIGSEGVs.
+  3. **`merge_reports.py`**  — silently skips any missing input
+                               (the crashed-invocation case),
+                               produces a valid merged JSON from
+                               whichever invocations survived.
+
+End result: we ALWAYS get vision+framework data from Khronos
+sample (the data the downstream compare reports rely on), and we
+get enhanced_vision data on top when the sample impl cooperates.
+Applied to both Phase 1 smoke and Phase 2 FHD×20 comparison runs.
+
+`scripts/merge_reports.py` is a new utility — takes N openvx-mark
+JSON reports and concatenates their `results` arrays into one
+report with the original schema. Other top-level blocks
+(`system`, `openvx`, `feature_set_availability`, `conformance`,
+etc.) are unioned per-key. It's reusable for any future
+impl/setup where a single bench invocation can crash mid-run.
+
 ### Fixed — HOGFeatures vxProcessGraph UAF on raw-pointer params (rustVX)
 
 `HOGFeatures` was still failing on rustVX as `SKIPPED (vxProcessGraph

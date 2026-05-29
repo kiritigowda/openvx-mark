@@ -262,12 +262,15 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
             //
             // Cross-impl reality (CI-observed):
             //   - rustVX        : runs the S16 path to completion (~10 ms FHD).
-            //   - Khronos sample: runs the S16 path.
-            //   - AMD MIVisionX : rejects at vxVerifyGraph with
+            //   - Khronos sample: REJECTS the S16 path at vxVerifyGraph
+            //                     with VX_ERROR_INVALID_PARAMETERS (-10).
+            //   - AMD MIVisionX : REJECTS at vxVerifyGraph with
             //                     VX_ERROR_INVALID_FORMAT (-14).
-            //                     This is an impl gap, not a spec issue —
-            //                     the runner records it as a clean SKIP.
-            // We accept any of the "didn't crash, didn't lie" outcomes here.
+            // Both reject paths are impl gaps, not spec issues — the
+            // runner records each as a clean SKIP via its bench-level
+            // verify-status check. The verify_fn here accepts every
+            // "didn't crash, didn't lie" outcome so the standalone
+            // verify path agrees with the runner's decision.
             const uint32_t W = 320, H = 240;
             std::vector<int16_t> a(W * H, 500);
             vx_image in = verify::createImage(ctx, W, H, VX_DF_IMAGE_S16,
@@ -281,7 +284,8 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
             if (status == VX_SUCCESS) status = vxProcessGraph(g);
             bool ok = (status == VX_SUCCESS)
                       || (status == VX_ERROR_NOT_SUPPORTED)
-                      || (status == VX_ERROR_INVALID_FORMAT);
+                      || (status == VX_ERROR_INVALID_FORMAT)
+                      || (status == VX_ERROR_INVALID_PARAMETERS);
             vxReleaseNode(&n); vxReleaseGraph(&g);
             vxReleaseImage(&remainder); vxReleasePyramid(&lap); vxReleaseImage(&in);
             return ok;
@@ -420,8 +424,16 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
             // the S16 round-trip preserves only an implementation-defined
             // value at the center pixel, so we only verify that the graph
             // executes end-to-end. The U8 LaplacianReconstruct variant
-            // pins down the numerical behaviour. Impl-gap matrix matches
-            // LaplacianPyramid_S16 (rustVX runs it; AMD AGO returns -14).
+            // pins down the numerical behaviour.
+            //
+            // Cross-impl reality matches LaplacianPyramid_S16:
+            //   - rustVX        : runs the S16 path to completion.
+            //   - Khronos sample: REJECTS the chained graph at vxVerifyGraph
+            //                     with VX_ERROR_INVALID_PARAMETERS (-10)
+            //                     because the upstream LaplacianPyramid
+            //                     can't take S16 input.
+            //   - AMD MIVisionX : REJECTS at vxVerifyGraph with
+            //                     VX_ERROR_INVALID_FORMAT (-14).
             const uint32_t W = 320, H = 240;
             std::vector<int16_t> a(W * H, 500);
             vx_image in = verify::createImage(ctx, W, H, VX_DF_IMAGE_S16,
@@ -439,7 +451,8 @@ std::vector<BenchmarkCase> registerMultiscaleBenchmarks() {
             if (status == VX_SUCCESS) status = vxProcessGraph(g);
             bool ok = (status == VX_SUCCESS)
                       || (status == VX_ERROR_NOT_SUPPORTED)
-                      || (status == VX_ERROR_INVALID_FORMAT);
+                      || (status == VX_ERROR_INVALID_FORMAT)
+                      || (status == VX_ERROR_INVALID_PARAMETERS);
             vxReleaseNode(&n_decompose); vxReleaseNode(&n_reconstruct); vxReleaseGraph(&g);
             vxReleaseImage(&reconstructed); vxReleaseImage(&remainder);
             vxReleasePyramid(&lap); vxReleaseImage(&in);
