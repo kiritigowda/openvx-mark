@@ -228,54 +228,6 @@ std::vector<OpenCVBenchmarkCase> registerCvFeatureBenchmarks() {
         cases.push_back(bc);
     }
 
-    // OpticalFlowPyrLK — U8 image pair with 100 tracked points.
-    {
-        OpenCVBenchmarkCase bc;
-        bc.name = "OpticalFlowPyrLK";
-        bc.category = "feature";
-        bc.feature_set = "vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
-            bufs.input = gen.makeU8(w, h);
-            bufs.input_extra = gen.makeU8(w, h);
-            bufs.points_prev.clear();
-            bufs.points_prev.reserve(100);
-            for (int i = 0; i < 100; ++i) {
-                bufs.points_prev.emplace_back(static_cast<float>((i % 10) * (w / 10)),
-                                              static_cast<float>((i / 10) * (h / 10)));
-            }
-            bufs.points_next.resize(bufs.points_prev.size());
-            bufs.status.resize(bufs.points_prev.size());
-            bufs.error.resize(bufs.points_prev.size());
-            return true;
-        };
-        bc.run_fn = [](CaseBuffers& bufs) {
-            cv::calcOpticalFlowPyrLK(
-                bufs.input, bufs.input_extra, bufs.points_prev, bufs.points_next,
-                bufs.status, bufs.error,
-                cv::Size(DEFAULT_OPTFLOW_WINSIZE, DEFAULT_OPTFLOW_WINSIZE),
-                DEFAULT_PYRAMID_LEVELS - 1,
-                cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 5, 0.01));
-        };
-        bc.verify_fn = []() -> bool {
-            cv::Mat img1(64, 64, CV_8UC1, cv::Scalar(100));
-            cv::Mat img2(64, 64, CV_8UC1, cv::Scalar(100));
-            std::vector<cv::Point2f> prev;
-            for (int i = 0; i < 4; ++i) {
-                prev.emplace_back(static_cast<float>(16 + (i % 2) * 32),
-                                  static_cast<float>(16 + (i / 2) * 32));
-            }
-            std::vector<cv::Point2f> next;
-            std::vector<unsigned char> status;
-            std::vector<float> error;
-            cv::calcOpticalFlowPyrLK(
-                img1, img2, prev, next, status, error,
-                cv::Size(5, 5), 1,
-                cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 5, 0.01));
-            return status.size() == prev.size();
-        };
-        cases.push_back(bc);
-    }
-
     return cases;
 }
 

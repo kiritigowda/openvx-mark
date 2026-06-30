@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — opencv-mark duplicate `OpticalFlowPyrLK` benchmark name
+
+`opencv-mark/src/benchmarks/cv_feature.cpp` registered two vision
+benchmarks with `bc.name = "OpticalFlowPyrLK"`: one using
+`DEFAULT_OPTFLOW_POINTS` (1000) and one using a hard-coded 100 points.
+Both were emitted under the same name, which caused the Vision Score
+geometric mean to double-count this kernel and produced two CSV/JSON
+rows per resolution where every other kernel produced one.
+
+Removed the 100-point variant so that only the `DEFAULT_OPTFLOW_POINTS`
+configuration participates in `--vision-parity`. This restores a
+single `OpticalFlowPyrLK` row per resolution and removes the weight
+bias from aggregate scores.
+
 ### Fixed — Khronos sample compatibility (verify_fns + CI split-and-merge)
 
 Three Khronos OpenVX-sample-impl issues surfaced once rustVX was
