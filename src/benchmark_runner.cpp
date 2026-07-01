@@ -159,6 +159,8 @@ std::vector<BenchmarkResult> BenchmarkRunner::runAll() {
                     if (!config_.quiet) {
                         if (!result.supported) {
                             printf(" SKIPPED (%s)\n", result.skip_reason.c_str());
+                        } else if (!result.verified) {
+                            printf(" VERIFY FAILED\n");
                         } else {
                             printf(" %.2f ms (%.1f MP/s)\n",
                                    result.wall_clock.median_ns / 1e6,
@@ -235,11 +237,14 @@ BenchmarkResult BenchmarkRunner::runGraphMode(const BenchmarkCase& bc, const Res
         vxProcessGraph(graph);
     }
 
-    // Output verification
+    // Output verification: hard gate before measurement. If the kernel
+    // cannot produce correct output on a small known input, timing it
+    // is meaningless and may bias composite scores with garbage data.
     if (bc.verify_fn) {
         if (!bc.verify_fn(ctx)) {
             result.verified = false;
             result.skip_reason = "output verification failed";
+            return result;
         }
     }
 
@@ -260,8 +265,8 @@ BenchmarkResult BenchmarkRunner::runGraphMode(const BenchmarkCase& bc, const Res
         samples.push_back(timer.elapsed_ns());
     }
 
-    // Compute wall-clock stats
-    result.wall_clock = BenchmarkStats::compute(samples);
+    // Compute wall-clock stats (raw + cleaned based on config)
+    result.wall_clock = BenchmarkStats::compute(samples, config_.remove_outliers);
     result.megapixels_per_sec = BenchmarkStats::computeThroughput(
         res.width, res.height, result.wall_clock.median_ns);
 
@@ -299,7 +304,7 @@ BenchmarkResult BenchmarkRunner::runGraphMode(const BenchmarkCase& bc, const Res
             samples.push_back(timer.elapsed_ns());
         }
 
-        result.wall_clock = BenchmarkStats::compute(samples);
+        result.wall_clock = BenchmarkStats::compute(samples, config_.remove_outliers);
         result.megapixels_per_sec = BenchmarkStats::computeThroughput(
             res.width, res.height, result.wall_clock.median_ns);
         result.iterations = current_iters;
@@ -367,6 +372,15 @@ BenchmarkResult BenchmarkRunner::runImmediateMode(const BenchmarkCase& bc, const
         bc.immediate_func(ctx, res.width, res.height, gen, tracker);
     }
 
+    // Output verification: hard gate before measurement.
+    if (bc.verify_fn) {
+        if (!bc.verify_fn(ctx)) {
+            result.verified = false;
+            result.skip_reason = "output verification failed";
+            return result;
+        }
+    }
+
     // Measurement
     std::vector<double> samples;
     samples.reserve(config_.iterations);
@@ -386,7 +400,7 @@ BenchmarkResult BenchmarkRunner::runImmediateMode(const BenchmarkCase& bc, const
         samples.push_back(timer.elapsed_ns());
     }
 
-    result.wall_clock = BenchmarkStats::compute(samples);
+    result.wall_clock = BenchmarkStats::compute(samples, config_.remove_outliers);
     result.megapixels_per_sec = BenchmarkStats::computeThroughput(
         res.width, res.height, result.wall_clock.median_ns);
 
@@ -428,7 +442,7 @@ BenchmarkResult BenchmarkRunner::runImmediateMode(const BenchmarkCase& bc, const
             samples.push_back(timer.elapsed_ns());
         }
 
-        result.wall_clock = BenchmarkStats::compute(samples);
+        result.wall_clock = BenchmarkStats::compute(samples, config_.remove_outliers);
         result.megapixels_per_sec = BenchmarkStats::computeThroughput(
             res.width, res.height, result.wall_clock.median_ns);
         result.iterations = current_iters;

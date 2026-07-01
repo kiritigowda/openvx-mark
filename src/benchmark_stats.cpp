@@ -3,7 +3,13 @@
 #include <cmath>
 #include <numeric>
 
-TimingStats BenchmarkStats::compute(const std::vector<double>& samples_ns) {
+// Internal helpers — declared here so compute() can use them above their
+// definitions while keeping the file readable top-to-bottom.
+static double mean(const std::vector<double>& v);
+static double stddev(const std::vector<double>& v, double mean_val);
+
+TimingStats BenchmarkStats::compute(const std::vector<double>& samples_ns,
+                                    bool remove_outliers) {
     TimingStats stats;
     if (samples_ns.empty()) return stats;
 
@@ -11,8 +17,16 @@ TimingStats BenchmarkStats::compute(const std::vector<double>& samples_ns) {
     std::vector<double> sorted = samples_ns;
     std::sort(sorted.begin(), sorted.end());
 
-    // Remove outliers via IQR
-    std::vector<double> cleaned = removeOutliers(sorted);
+    // Raw statistics over the full, unfiltered sample set.
+    stats.raw_sample_count = sorted.size();
+    stats.raw_mean_ns = mean(sorted);
+    stats.raw_median_ns = percentile(sorted, 50.0);
+    stats.raw_stddev_ns = stddev(sorted, stats.raw_mean_ns);
+    stats.raw_cv_percent = (stats.raw_mean_ns > 0)
+        ? (stats.raw_stddev_ns / stats.raw_mean_ns * 100.0) : 0.0;
+
+    // Remove outliers via IQR when requested.
+    std::vector<double> cleaned = remove_outliers ? removeOutliers(sorted) : sorted;
     if (cleaned.empty()) cleaned = sorted;  // fallback if all removed
 
     stats.sample_count = cleaned.size();
@@ -23,19 +37,13 @@ TimingStats BenchmarkStats::compute(const std::vector<double>& samples_ns) {
     stats.max_ns = cleaned.back();
 
     // Mean
-    double sum = std::accumulate(cleaned.begin(), cleaned.end(), 0.0);
-    stats.mean_ns = sum / static_cast<double>(cleaned.size());
+    stats.mean_ns = mean(cleaned);
 
     // Median
     stats.median_ns = percentile(cleaned, 50.0);
 
     // Stddev
-    double sq_sum = 0;
-    for (double v : cleaned) {
-        double diff = v - stats.mean_ns;
-        sq_sum += diff * diff;
-    }
-    stats.stddev_ns = std::sqrt(sq_sum / static_cast<double>(cleaned.size()));
+    stats.stddev_ns = stddev(cleaned, stats.mean_ns);
 
     // CV%
     stats.cv_percent = (stats.mean_ns > 0) ? (stats.stddev_ns / stats.mean_ns * 100.0) : 0.0;
@@ -46,6 +54,22 @@ TimingStats BenchmarkStats::compute(const std::vector<double>& samples_ns) {
     stats.p99_ns = percentile(sorted, 99.0);
 
     return stats;
+}
+
+static double mean(const std::vector<double>& v) {
+    if (v.empty()) return 0;
+    double sum = std::accumulate(v.begin(), v.end(), 0.0);
+    return sum / static_cast<double>(v.size());
+}
+
+static double stddev(const std::vector<double>& v, double mean_val) {
+    if (v.empty()) return 0;
+    double sq_sum = 0;
+    for (double x : v) {
+        double diff = x - mean_val;
+        sq_sum += diff * diff;
+    }
+    return std::sqrt(sq_sum / static_cast<double>(v.size()));
 }
 
 double BenchmarkStats::computeThroughput(uint32_t width, uint32_t height, double median_ns) {

@@ -79,7 +79,11 @@ struct BenchmarkConfig {
 
     // Stability gating
     double stability_threshold = 15.0;  // CV% threshold for stability warning
-    int max_retries = 0;                // 0 = no retries
+    int max_retries = 1;                // 1 = one retry if CV% exceeds threshold
+
+    // Statistics policy
+    bool remove_outliers = true;        // IQR outlier removal for headline timing stats
+    bool exclude_unstable_from_scores = true;  // exclude high-CV results from composite scores
 
     // Threading policy — applied early in main() before any kernel runs.
     //   0  → leave the impl/library default in place (OpenCV: nproc;
