@@ -51,7 +51,9 @@ static void printUsage(const char* prog) {
     printf("  --warmup N                    Warm-up iterations (default: 10)\n");
     printf("  --seed N                      PRNG seed (default: 42)\n");
     printf("  --stability-threshold N       CV%% threshold for stability warning (default: 15)\n");
-    printf("  --max-retries N               Max retries for unstable benchmarks (default: 0)\n");
+    printf("  --max-retries N               Max retries for unstable benchmarks (default: 1)\n");
+    printf("  --no-outlier-removal          Use raw samples for headline mean/median/stddev/CV\n");
+    printf("  --include-unstable-in-scores  Include high-CV results in composite scores\n");
     printf("  --framework-chain-depths N,N  Chain depths for verify_chain (default: 1,4,16,64)\n\n");
 
     printf("Output:\n");
@@ -187,6 +189,10 @@ static bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.stability_threshold = atof(argv[++i]);
         } else if (arg == "--max-retries" && i + 1 < argc) {
             config.max_retries = atoi(argv[++i]);
+        } else if (arg == "--no-outlier-removal") {
+            config.remove_outliers = false;
+        } else if (arg == "--include-unstable-in-scores") {
+            config.exclude_unstable_from_scores = false;
         } else if (arg == "--framework-chain-depths" && i + 1 < argc) {
             auto depth_strs = splitComma(argv[++i]);
             config.framework_chain_depths.clear();
@@ -346,7 +352,12 @@ int main(int argc, char* argv[]) {
         if (i > 0) printf(", ");
         printf("%s", config.feature_sets[i].c_str());
     }
-    printf("\n\n");
+    printf("\n");
+    if (config.threads == 1) {
+        printf("  Threading:   pinned to 1 thread for cross-impl parity; "
+               "use --threads 0 to leave each impl at its own default\n");
+    }
+    printf("\n");
 
     BenchmarkRunner runner(context, config, registry);
 
@@ -409,7 +420,7 @@ int main(int argc, char* argv[]) {
            total, passed, skipped, failed);
 
     // Feature 1: Composite Scores
-    auto scores = BenchmarkReport::computeScores(results);
+    auto scores = report.computeScores(results);
     if (scores.vision_count > 0) {
         printf("  OpenVX Vision Score: %.2f MP/s (%d benchmarks)\n",
                scores.overall_vision_score, scores.vision_count);

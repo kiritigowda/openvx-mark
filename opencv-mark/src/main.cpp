@@ -58,7 +58,9 @@ void printUsage(const char* prog) {
     printf("  --warmup N                    Warm-up iterations (default: 10)\n");
     printf("  --seed N                      PRNG seed (default: 42)\n");
     printf("  --stability-threshold N       CV%% threshold (default: 15)\n");
-    printf("  --max-retries N               Max retries for unstable benchmarks (default: 0)\n\n");
+    printf("  --max-retries N               Max retries for unstable benchmarks (default: 1)\n");
+    printf("  --no-outlier-removal          Use raw samples for headline mean/median/stddev/CV\n");
+    printf("  --include-unstable-in-scores  Include high-CV results in composite scores\n\n");
 
     printf("Output:\n");
     printf("  --output-dir DIR              Output directory (default: ./benchmark_results)\n");
@@ -184,6 +186,10 @@ bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.stability_threshold = atof(argv[++i]);
         } else if (arg == "--max-retries" && i + 1 < argc) {
             config.max_retries = atoi(argv[++i]);
+        } else if (arg == "--no-outlier-removal") {
+            config.remove_outliers = false;
+        } else if (arg == "--include-unstable-in-scores") {
+            config.exclude_unstable_from_scores = false;
         } else if (arg == "--compare" && i + 1 < argc) {
             config.compare_files = splitComma(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
@@ -316,7 +322,12 @@ int main(int argc, char* argv[]) {
                config.resolutions[i].width, config.resolutions[i].height);
     }
     printf("\n  Iterations: %d (warmup %d)\n", config.iterations, config.warmup);
-    printf("  Mode:       graph (single cv:: call on pre-allocated buffers)\n\n");
+    printf("  Mode:       graph (single cv:: call on pre-allocated buffers)\n");
+    if (config.threads == 1) {
+        printf("  Threading:  pinned to 1 thread for cross-impl parity; "
+               "use --threads 0 for OpenCV default (nproc) behavior\n");
+    }
+    printf("\n");
 
     opencv_mark::OpenCVRunner runner(config);
     runner.addCases(opencv_mark::registerCvFilterBenchmarks());
@@ -367,7 +378,7 @@ int main(int argc, char* argv[]) {
     printf("\n=============================================================\n");
     printf("  Summary: %d total | %d passed | %d skipped | %d failed\n",
            total, passed, skipped, failed);
-    auto scores = BenchmarkReport::computeScores(results);
+    auto scores = report.computeScores(results);
     if (scores.vision_count > 0) {
         printf("  OpenCV Vision Score: %.2f MP/s (%d benchmarks)\n",
                scores.overall_vision_score, scores.vision_count);

@@ -5,6 +5,100 @@ All notable changes to **openvx-mark** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning where the major version tracks backward compatibility of the JSON report schema.
 
 ## [Unreleased]
+### Breaking — JSON/CSV report schema expanded
+
+This release adds transparency fields to timing reports. Downstream
+parsers that read CSV by fixed column index or JSON by a strict field
+list will need updating:
+
+- `TimingStats` now exposes `raw_mean_ms`, `raw_median_ms`,
+  `raw_stddev_ms`, `raw_cv_percent`, and `raw_sample_count` in both
+  JSON and CSV.
+- JSON `config` gains `remove_outliers` and `exclude_unstable_from_scores`.
+- JSON `vx_perf` gains `median_is_avg_approximation`.
+- The CSV header grew by 5 columns (`raw_*`) and the skipped-row comma
+  count was adjusted accordingly.
+
+### Fixed — verification is now a hard gate before measurement
+
+`verify_fn` was called after the warmup loop but before the timed
+measurement loop. If verification failed, the runner only set
+`verified = false` and then proceeded to burn full measurement time
+and emit possibly-garbage timing numbers.
+
+Both `src/benchmark_runner.cpp` and `opencv-mark/src/opencv_runner.cpp`
+now return immediately after a verification failure, skipping the
+timed loop entirely. `verify_fn` is also invoked for immediate-mode
+cases where it was previously ignored. This prevents unverified
+kernels from influencing composite scores and avoids wasting time on
+known-bad configurations.
+
+### Changed — transparent statistics: raw + cleaned timing data
+
+`TimingStats` now carries both cleaned (headline) and raw
+(unfiltered) statistics. The shared `BenchmarkStats::compute()`
+function reports:
+
+- cleaned `mean/median/stddev/cv` (with IQR outlier removal, the default)
+- raw `mean/median/stddev/cv/sample_count` for comparison
+- `outliers_removed` count
+
+JSON, CSV, and Markdown reports expose the raw fields. The Markdown
+config section now states whether IQR outlier removal is enabled,
+and the glossary explains how headline stats are derived.
+
+New CLI flags:
+
+- `--no-outlier-removal` — use raw samples for headline stats
+- `--include-unstable-in-scores` — keep high-CV results in composite scores
+
+### Changed — unstable results excluded from composite scores by default
+
+The Vision Score and Enhanced Vision Score geometric means previously
+included every passing graph-mode benchmark, even if its CV% was far
+above the stability threshold. A single noisy kernel could materially
+distort the headline number.
+
+`BenchmarkReport::computeScores()` now skips benchmarks with
+`stability_warning == true` when `exclude_unstable_from_scores` is
+true (the new default). The Markdown report notes how many benchmarks
+were excluded and how to opt back in.
+
+### Changed — default `max_retries` raised from 0 to 1
+
+A single retry with 2x iterations often stabilizes measurements on
+noisy CI runners at negligible cost. The new default gives one
+auto-retry before flagging a result unstable.
+
+### Added — threading default warning in startup banner
+
+When `--threads` is left at the default `1`, both binaries now print a
+one-line reminder that the run is pinned to a single thread for
+cross-implementation parity and how to restore library defaults.
+
+### Added — `vx_perf` median caveat documented in JSON
+
+`vx_perf_t` has no true median field, so the runner approximated it
+from `avg`. JSON reports now emit `"median_is_avg_approximation": true`
+inside the `vx_perf` object, and the Markdown glossary explains the
+limitation.
+
+### Added — OpenCV comparison framing note
+
+`BenchmarkReport::compareReports()` now prefixes generated comparison
+reports with a short block explaining that the comparison is OpenVX
+graph-mode vs sequential OpenCV, single-threaded by default, and that
+speedup values are OpenVX/OpenCV throughput ratios.
+
+### Added — CI smoke verification check
+
+A new `scripts/check_report.py` utility parses the generated JSON and
+fails if any benchmark in the checked scope is unsupported or
+unverified. Each Phase-1 smoke job now invokes it so verification
+regressions are caught before the slower Phase 2 comparison job runs.
+Use `--warn-only` for a non-failing audit or `--allow-feature-set` to
+limit the checked scope.
+
 
 ### Fixed — opencv-mark duplicate `OpticalFlowPyrLK` benchmark name
 

@@ -68,8 +68,9 @@ public:
     void writeCSV(const std::vector<BenchmarkResult>& results, const std::string& path);
     void writeMarkdown(const std::vector<BenchmarkResult>& results, const std::string& path);
 
-    // Analytics
-    static CompositeScores computeScores(const std::vector<BenchmarkResult>& results);
+    // Analytics. computeScores now reads the report's config to decide whether
+    // unstable (high-CV) results are included in composite scores.
+    CompositeScores computeScores(const std::vector<BenchmarkResult>& results);
     static std::vector<ScalingEntry> computeScaling(const std::vector<BenchmarkResult>& results);
     static std::vector<ConformanceResult> checkConformance(const std::vector<BenchmarkResult>& results,
                                                             const BenchmarkCatalog& catalog);

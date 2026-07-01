@@ -224,6 +224,15 @@ jobs:
             --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
 
+      - name: Verify MIVisionX smoke report
+        if: always()
+        run: |
+          set -euo pipefail
+          cd build-smoke
+          python3 ../scripts/check_report.py \
+            smoke-results/benchmark_results.json \
+            --allow-feature-set vision,framework
+
       - name: Upload MIVisionX artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -356,6 +365,21 @@ jobs:
             smoke-results-base/benchmark_results.json \
             smoke-results-extra/benchmark_results.json \
             --output smoke-results/benchmark_results.json
+
+      - name: Verify Khronos smoke report (vision + framework only)
+        if: always()
+        run: |
+          set -euo pipefail
+          cd build-smoke
+          # The Khronos reference sample has known vision-profile gaps
+          # (e.g. S16 LaplacianPyramid is rejected at vxVerifyGraph with
+          # VX_ERROR_INVALID_PARAMETERS), so unsupported rows are expected
+          # here. Use --warn-only so the smoke still surfaces the count
+          # without failing the job for impl-side limitations.
+          python3 ../scripts/check_report.py \
+            smoke-results/benchmark_results.json \
+            --allow-feature-set vision,framework \
+            --warn-only
 
       - name: Upload Khronos sample artifact
         if: always()
@@ -493,6 +517,15 @@ jobs:
             --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
 
+      - name: Verify rustVX smoke report
+        if: always()
+        run: |
+          set -euo pipefail
+          cd build-smoke
+          python3 ../scripts/check_report.py \
+            smoke-results/benchmark_results.json \
+            --allow-feature-set vision,enhanced_vision,framework
+
       - name: Upload rustVX artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -594,6 +627,14 @@ jobs:
           ./opencv-mark/opencv-mark --feature-set vision,enhanced_vision \
             --resolution VGA --iterations 5 --warmup 1 --threads 1 \
             --output-dir smoke-results
+
+      - name: Verify OpenCV smoke report
+        if: always()
+        run: |
+          set -euo pipefail
+          cd build-opencv
+          python3 ../scripts/check_report.py \
+            smoke-results/benchmark_results.json
 
       - name: Upload opencv-mark smoke results
         if: always()

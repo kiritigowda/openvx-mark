@@ -76,7 +76,13 @@ static void writeTimingJSON(std::ofstream& f, const std::string& prefix, const T
     f << prefix << "\"p99_ms\": " << ts.p99_ns / 1e6 << ",\n";
     f << prefix << "\"cv_percent\": " << std::setprecision(2) << ts.cv_percent << ",\n";
     f << prefix << "\"sample_count\": " << ts.sample_count << ",\n";
-    f << prefix << "\"outliers_removed\": " << ts.outliers_removed;
+    f << prefix << "\"outliers_removed\": " << ts.outliers_removed << ",\n";
+    // Raw (unfiltered) counterparts so readers can see the effect of IQR cleaning.
+    f << prefix << "\"raw_mean_ms\": " << std::fixed << std::setprecision(4) << ts.raw_mean_ns / 1e6 << ",\n";
+    f << prefix << "\"raw_median_ms\": " << ts.raw_median_ns / 1e6 << ",\n";
+    f << prefix << "\"raw_stddev_ms\": " << ts.raw_stddev_ns / 1e6 << ",\n";
+    f << prefix << "\"raw_cv_percent\": " << std::setprecision(2) << ts.raw_cv_percent << ",\n";
+    f << prefix << "\"raw_sample_count\": " << ts.raw_sample_count;
 }
 
 // ============================================================
@@ -93,6 +99,11 @@ CompositeScores BenchmarkReport::computeScores(const std::vector<BenchmarkResult
     for (const auto& r : results) {
         if (!r.supported || !r.verified || r.mode != "graph") continue;
         if (r.megapixels_per_sec <= 0) continue;
+
+        // Exclude results with high variability from composite scores by
+        // default. A single unstable kernel can otherwise distort the
+        // geometric mean. Users can opt back in with --include-unstable-in-scores.
+        if (config_.exclude_unstable_from_scores && r.stability_warning) continue;
 
         // Key category scores by "feature_set/category" to keep them separate
         cat_mps[r.feature_set + "/" + r.category].push_back(r.megapixels_per_sec);
@@ -361,6 +372,9 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
     f << "    \"stability_threshold\": " << std::fixed << std::setprecision(1)
       << config_.stability_threshold << ",\n";
     f << "    \"max_retries\": " << config_.max_retries << ",\n";
+    f << "    \"remove_outliers\": " << (config_.remove_outliers ? "true" : "false") << ",\n";
+    f << "    \"exclude_unstable_from_scores\": "
+      << (config_.exclude_unstable_from_scores ? "true" : "false") << ",\n";
     f << "    \"resolutions\": [";
     for (size_t i = 0; i < config_.resolutions.size(); i++) {
         if (i > 0) f << ", ";
@@ -515,7 +529,7 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
             if (r.has_vx_perf) {
                 f << ",\n      \"vx_perf\": {\n";
                 writeTimingJSON(f, "        ", r.vx_perf);
-                f << "\n      }";
+                f << ",\n        \"median_is_avg_approximation\": true\n      }";
             }
             f << ",\n      \"framework_metrics\": [";
             for (size_t fm_i = 0; fm_i < r.framework_metrics.size(); fm_i++) {
@@ -562,6 +576,7 @@ void BenchmarkReport::writeCSV(const std::vector<BenchmarkResult>& results,
     f << "name,category,feature_set,mode,resolution,width,height,supported,verified,"
       << "median_ms,mean_ms,min_ms,max_ms,stddev_ms,p5_ms,p95_ms,p99_ms,"
       << "cv_percent,megapixels_per_sec,samples,outliers_removed,"
+      << "raw_mean_ms,raw_median_ms,raw_stddev_ms,raw_cv_percent,raw_samples,"
       << "vx_perf_avg_ms,vx_perf_min_ms,vx_perf_max_ms,"
       << "stability_warning,peak_ms,sustained_ratio\n";
 
@@ -584,7 +599,13 @@ void BenchmarkReport::writeCSV(const std::vector<BenchmarkResult>& results,
               << std::setprecision(2) << r.wall_clock.cv_percent << ","
               << r.megapixels_per_sec << ","
               << r.wall_clock.sample_count << ","
-              << r.wall_clock.outliers_removed << ",";
+              << r.wall_clock.outliers_removed << ","
+              // Raw (unfiltered) stats for transparency
+              << r.wall_clock.raw_mean_ns / 1e6 << ","
+              << r.wall_clock.raw_median_ns / 1e6 << ","
+              << r.wall_clock.raw_stddev_ns / 1e6 << ","
+              << r.wall_clock.raw_cv_percent << ","
+              << r.wall_clock.raw_sample_count << ",";
 
             if (r.has_vx_perf) {
                 f << std::setprecision(4)
@@ -603,7 +624,7 @@ void BenchmarkReport::writeCSV(const std::vector<BenchmarkResult>& results,
               << "," << std::setprecision(4) << peak_ms
               << "," << std::setprecision(4) << sustained_ratio;
         } else {
-            f << ",,,,,,,,,,,,,,,,,";
+            f << ",,,,,,,,,,,,,,,,,,,,,,";
         }
         f << "\n";
     }
@@ -650,6 +671,8 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
     f << "- Stability Threshold: " << std::fixed << std::setprecision(1)
       << config_.stability_threshold << "% CV\n";
     f << "- Max Retries: " << config_.max_retries << "\n";
+    f << "- Outlier Removal: " << (config_.remove_outliers ? "enabled (IQR)" : "disabled — raw samples used") << "\n";
+    f << "- Exclude Unstable from Scores: " << (config_.exclude_unstable_from_scores ? "yes" : "no") << "\n";
     f << "- Resolutions: ";
     for (size_t i = 0; i < config_.resolutions.size(); i++) {
         if (i > 0) f << ", ";
@@ -700,6 +723,19 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
           << "`concurrency_speedup` across all framework benchmarks. Values >1.0x "
           << "indicate the OpenVX graph framework adds aggregate value over a "
           << "kernel-only baseline.\n\n";
+    }
+
+    if (config_.exclude_unstable_from_scores) {
+        int excluded = 0;
+        for (const auto& r : results) {
+            if (r.stability_warning) ++excluded;
+        }
+        if (excluded > 0) {
+            f << "> **Note:** " << excluded
+              << " benchmark(s) with CV% > " << config_.stability_threshold
+              << "% were excluded from the Vision/Enhanced scores above. "
+              << "Use `--include-unstable-in-scores` to include them.\n\n";
+        }
     }
 
     // Category Sub-Scores separated by feature set
@@ -958,7 +994,17 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
     f << "| **Conformance** | Whether all available kernels in a feature set produced valid graph-mode results. "
       << "PASS = all tested successfully. FAIL = some kernels skipped or unavailable. |\n";
     f << "| **Stability Warning** | Flagged when CV% exceeds the stability threshold (default 15%). "
-      << "Results may not be reliable for comparison. |\n";
+      << "Results may not be reliable for comparison. "
+      << "By default, stability-warned results are excluded from Vision/Enhanced scores. |\n";
+    f << "| **Outlier Removal** | By default, samples outside 1.5x IQR are removed before "
+      << "computing headline mean/median/stddev/CV. Percentiles (P5/P95/P99) are always "
+      << "computed from the raw sorted samples. Use `--no-outlier-removal` for raw headline stats. |\n";
+    f << "| **Raw * (ms/%)** | Unfiltered statistics before IQR outlier removal. "
+      << "Compare with the cleaned headline numbers to judge whether outlier removal "
+      << "changed the story. |\n";
+    f << "| **vx_perf median** | `vx_perf_t` exposes only avg/min/max/num, so the reported "
+      << "`median_ms` for `vx_perf` is approximated as `avg_ms`. Treat it as a coarse sanity "
+      << "check against wall-clock median, not as a true median. |\n";
     f << "| **graph** | OpenVX graph execution mode. The graph is verified and optimized once, "
       << "then executed repeatedly. Most efficient mode. |\n";
     f << "| **immediate** | OpenVX immediate execution mode (vxu* functions). "
@@ -1371,6 +1417,13 @@ void BenchmarkReport::compareReports(const std::vector<std::string>& json_files,
     }
 
     f << "# OpenVX Benchmark Comparison\n\n";
+    f << "> **What is being compared?** This report joins OpenVX graph-mode "
+      << "benchmarks against equivalent sequential OpenCV function calls "
+      << "(the `opencv-mark` baseline). Both sides are pinned to a single "
+      << "thread by default for a per-kernel apples-to-apples comparison; "
+      << "use `--threads 0` on either side to compare each library at its "
+      << "own default parallelism. Speedup = OpenVX throughput / OpenCV "
+      << "throughput; values >1.0x mean OpenVX is faster on this kernel.\n\n";
     f << "**" << name_a << "** vs **" << name_b << "**\n\n";
 
     // --- System Info ---

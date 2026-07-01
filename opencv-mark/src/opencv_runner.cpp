@@ -122,6 +122,7 @@ BenchmarkResult OpenCVRunner::runOne(const OpenCVBenchmarkCase& bc, const Resolu
         if (!ok) {
             result.verified = false;
             result.skip_reason = "output verification failed";
+            return result;
         }
     }
 
@@ -142,7 +143,7 @@ BenchmarkResult OpenCVRunner::runOne(const OpenCVBenchmarkCase& bc, const Resolu
         return result;
     }
 
-    result.wall_clock = BenchmarkStats::compute(samples);
+    result.wall_clock = BenchmarkStats::compute(samples, config_.remove_outliers);
     result.megapixels_per_sec = BenchmarkStats::computeThroughput(
         res.width, res.height, result.wall_clock.median_ns);
 
@@ -163,7 +164,7 @@ BenchmarkResult OpenCVRunner::runOne(const OpenCVBenchmarkCase& bc, const Resolu
             timer.stop();
             samples.push_back(timer.elapsed_ns());
         }
-        result.wall_clock = BenchmarkStats::compute(samples);
+        result.wall_clock = BenchmarkStats::compute(samples, config_.remove_outliers);
         result.megapixels_per_sec = BenchmarkStats::computeThroughput(
             res.width, res.height, result.wall_clock.median_ns);
         result.iterations = current_iters;

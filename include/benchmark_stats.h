@@ -6,6 +6,9 @@
 #include <vector>
 
 struct TimingStats {
+    // Headline metrics are computed from the IQR-cleaned sample set when
+    // outlier removal is enabled (the default). Raw counterparts are kept
+    // so readers can see how much the cleaning step moved the numbers.
     double mean_ns = 0;
     double median_ns = 0;
     double min_ns = 0;
@@ -14,9 +17,16 @@ struct TimingStats {
     double p5_ns = 0;
     double p95_ns = 0;
     double p99_ns = 0;
-    double cv_percent = 0;  // coefficient of variation
+    double cv_percent = 0;  // coefficient of variation (cleaned)
     size_t sample_count = 0;
     size_t outliers_removed = 0;
+
+    // Raw (unfiltered) statistics computed before IQR cleaning.
+    double raw_mean_ns = 0;
+    double raw_median_ns = 0;
+    double raw_stddev_ns = 0;
+    double raw_cv_percent = 0;
+    size_t raw_sample_count = 0;
 };
 
 // A named scalar metric emitted by a framework benchmark.
@@ -60,8 +70,11 @@ struct BenchmarkResult {
 
 class BenchmarkStats {
 public:
-    // Compute statistics from raw timing samples (in nanoseconds)
-    static TimingStats compute(const std::vector<double>& samples_ns);
+    // Compute statistics from raw timing samples (in nanoseconds).
+    // When remove_outliers is true (default), headline fields are IQR-cleaned
+    // and raw_* fields retain the unfiltered values.
+    static TimingStats compute(const std::vector<double>& samples_ns,
+                               bool remove_outliers = true);
 
     // Compute throughput in megapixels/sec
     static double computeThroughput(uint32_t width, uint32_t height, double median_ns);
