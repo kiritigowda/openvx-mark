@@ -101,7 +101,7 @@ private:
 // `registerXxxBenchmarks()` factories.
 std::vector<OpenCVBenchmarkCase> registerCvFilterBenchmarks();
 std::vector<OpenCVBenchmarkCase> registerCvColorBenchmarks();
-std::vector<OpenCVBenchmarkCase> registerCvGeometricBenchmarks();
+std::vector<OpenCVBenchmarkCase> registerCvGeometricBenchmarks(const BenchmarkConfig& config);
 std::vector<OpenCVBenchmarkCase> registerCvPixelwiseBenchmarks();
 std::vector<OpenCVBenchmarkCase> registerCvStatisticalBenchmarks();
 std::vector<OpenCVBenchmarkCase> registerCvMiscBenchmarks();

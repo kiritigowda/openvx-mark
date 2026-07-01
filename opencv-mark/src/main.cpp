@@ -60,7 +60,9 @@ void printUsage(const char* prog) {
     printf("  --stability-threshold N       CV%% threshold (default: 15)\n");
     printf("  --max-retries N               Max retries for unstable benchmarks (default: 1)\n");
     printf("  --no-outlier-removal          Use raw samples for headline mean/median/stddev/CV\n");
-    printf("  --include-unstable-in-scores  Include high-CV results in composite scores\n\n");
+    printf("  --include-unstable-in-scores  Include high-CV results in composite scores\n");
+    printf("  --remap-pattern PATTERN       Remap coordinate pattern: identity,\n");
+    printf("                                lens_distortion (default), random_offsets\n\n");
 
     printf("Output:\n");
     printf("  --output-dir DIR              Output directory (default: ./benchmark_results)\n");
@@ -190,6 +192,15 @@ bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.remove_outliers = false;
         } else if (arg == "--include-unstable-in-scores") {
             config.exclude_unstable_from_scores = false;
+        } else if (arg == "--remap-pattern" && i + 1 < argc) {
+            config.remap_pattern = argv[++i];
+            if (config.remap_pattern != "identity" &&
+                config.remap_pattern != "lens_distortion" &&
+                config.remap_pattern != "random_offsets") {
+                printf("WARNING: unknown remap pattern '%s', using lens_distortion\n",
+                       config.remap_pattern.c_str());
+                config.remap_pattern = "lens_distortion";
+            }
         } else if (arg == "--compare" && i + 1 < argc) {
             config.compare_files = splitComma(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
@@ -332,7 +343,7 @@ int main(int argc, char* argv[]) {
     opencv_mark::OpenCVRunner runner(config);
     runner.addCases(opencv_mark::registerCvFilterBenchmarks());
     runner.addCases(opencv_mark::registerCvColorBenchmarks());
-    runner.addCases(opencv_mark::registerCvGeometricBenchmarks());
+    runner.addCases(opencv_mark::registerCvGeometricBenchmarks(config));
     runner.addCases(opencv_mark::registerCvPixelwiseBenchmarks());
     runner.addCases(opencv_mark::registerCvStatisticalBenchmarks());
     runner.addCases(opencv_mark::registerCvMiscBenchmarks());

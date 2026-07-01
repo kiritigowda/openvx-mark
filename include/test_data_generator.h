@@ -5,6 +5,28 @@
 #include <cstdint>
 #include <random>
 
+namespace benchmark {
+
+// Remap coordinate generation patterns. The default benchmark pattern is
+// LENS_DISTORTION because an identity remap produces perfectly sequential
+// memory access that is unrepresentative of real-world lens correction,
+// fisheye undistortion, or general warping workloads.
+enum class RemapPattern {
+    IDENTITY,        // (x,y) -> (x,y): sequential, cache-friendly, not realistic
+    LENS_DISTORTION, // radial distortion model: realistic scattered access
+    RANDOM_OFFSETS   // small random jitter around each pixel
+};
+
+// Parse a user-supplied remap pattern string. Returns LENS_DISTORTION for
+// unknown values so benchmarks always run with a realistic default.
+inline RemapPattern remapPatternFromString(const std::string& s) {
+    if (s == "identity") return RemapPattern::IDENTITY;
+    if (s == "random_offsets") return RemapPattern::RANDOM_OFFSETS;
+    return RemapPattern::LENS_DISTORTION;
+}
+
+} // namespace benchmark
+
 class TestDataGenerator {
 public:
     explicit TestDataGenerator(uint64_t seed = 42);
@@ -25,7 +47,10 @@ public:
     vx_matrix createAffineMatrix(vx_context ctx);
     vx_matrix createPerspectiveMatrix(vx_context ctx);
     vx_remap createRemap(vx_context ctx, uint32_t src_w, uint32_t src_h,
-                         uint32_t dst_w, uint32_t dst_h);
+                         uint32_t dst_w, uint32_t dst_h,
+                         benchmark::RemapPattern pattern = benchmark::RemapPattern::LENS_DISTORTION);
+    vx_remap createRemapIdentity(vx_context ctx, uint32_t src_w, uint32_t src_h,
+                                  uint32_t dst_w, uint32_t dst_h);
     vx_convolution createConvolution3x3(vx_context ctx);
     vx_lut createLUT(vx_context ctx);
     vx_distribution createDistribution(vx_context ctx, vx_size num_bins,
@@ -40,6 +65,7 @@ public:
 
 private:
     std::mt19937_64 rng_;
+    uint64_t seed_;
 };
 
 #endif // TEST_DATA_GENERATOR_H

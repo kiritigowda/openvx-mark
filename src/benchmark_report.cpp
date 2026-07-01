@@ -375,6 +375,7 @@ void BenchmarkReport::writeJSON(const std::vector<BenchmarkResult>& results,
     f << "    \"remove_outliers\": " << (config_.remove_outliers ? "true" : "false") << ",\n";
     f << "    \"exclude_unstable_from_scores\": "
       << (config_.exclude_unstable_from_scores ? "true" : "false") << ",\n";
+    f << "    \"remap_pattern\": \"" << jsonEscape(config_.remap_pattern) << "\",\n";
     f << "    \"resolutions\": [";
     for (size_t i = 0; i < config_.resolutions.size(); i++) {
         if (i > 0) f << ", ";
@@ -673,6 +674,7 @@ void BenchmarkReport::writeMarkdown(const std::vector<BenchmarkResult>& results,
     f << "- Max Retries: " << config_.max_retries << "\n";
     f << "- Outlier Removal: " << (config_.remove_outliers ? "enabled (IQR)" : "disabled — raw samples used") << "\n";
     f << "- Exclude Unstable from Scores: " << (config_.exclude_unstable_from_scores ? "yes" : "no") << "\n";
+    f << "- Remap Pattern: " << config_.remap_pattern << "\n";
     f << "- Resolutions: ";
     for (size_t i = 0; i < config_.resolutions.size(); i++) {
         if (i > 0) f << ", ";

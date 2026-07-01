@@ -99,6 +99,33 @@ regressions are caught before the slower Phase 2 comparison job runs.
 Use `--warn-only` for a non-failing audit or `--allow-feature-set` to
 limit the checked scope.
 
+### Changed — Remap benchmark now uses a realistic lens-distortion pattern
+
+Issue #24 identified that the Remap benchmark used an identity remap
+(`dst(x,y) -> src(x,y)`) which yields perfectly sequential, cache-friendly
+memory access. Real-world remaps (lens distortion, fisheye correction,
+undistort) have scattered access patterns, and some implementations may
+detect and short-circuit identity remaps, inflating reported throughput.
+
+`TestDataGenerator::createRemap()` and `OpenCVTestData::makeRemap()` now
+default to a deterministic radial lens-distortion model. Two additional
+patterns are selectable via `--remap-pattern`:
+
+- `identity` — restores the old sequential/identity behaviour
+- `lens_distortion` — default; radial barrel distortion
+- `random_offsets` — small per-pixel jitter that breaks any identity fast path
+
+The Remap and Remap_Nearest benchmarks use the configured pattern, while
+their correctness `verify_fn`s continue to use a stable identity remap so
+reference checks remain deterministic. JSON/Markdown reports now record
+`remap_pattern` in the config section for reproducibility.
+
+### Fixed — timing calls now include full memory fences
+
+To reduce compiler/CPU instruction-reordering effects around the measured
+kernel call, `BenchmarkTimer::start()` and `stop()` now issue
+`std::atomic_thread_fence(std::memory_order_seq_cst)` before reading and
+after writing the high-resolution clock sample.
 
 ### Fixed — opencv-mark duplicate `OpticalFlowPyrLK` benchmark name
 

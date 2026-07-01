@@ -32,8 +32,9 @@
 
 namespace opencv_mark {
 
-std::vector<OpenCVBenchmarkCase> registerCvGeometricBenchmarks() {
+std::vector<OpenCVBenchmarkCase> registerCvGeometricBenchmarks(const BenchmarkConfig& config) {
     std::vector<OpenCVBenchmarkCase> cases;
+    const RemapPattern remap_pattern = remapPatternFromString(config.remap_pattern);
 
     {
         OpenCVBenchmarkCase bc;
@@ -151,21 +152,26 @@ std::vector<OpenCVBenchmarkCase> registerCvGeometricBenchmarks() {
         cases.push_back(bc);
     }
 
-    // Remap — U8 in, U8 out, 32FC1 mapX + 32FC1 mapY
+    // Remap — U8 in, U8 out, 32FC1 mapX + CV_32FC1 mapY
     //
     // Note: cv::remap uses a separate output for the mapY (we reuse
     // CaseBuffers.output_extra to hold mapY since input_extra is
     // already taken by mapX). The actual output image lives in
     // CaseBuffers.output.
+    //
+    // The map coordinates default to a radial lens-distortion model
+    // (LENS_DISTORTION) so the benchmark exercises scattered, realistic
+    // memory access. Use --remap-pattern identity to restore the old
+    // cache-friendly behaviour.
     {
         OpenCVBenchmarkCase bc;
         bc.name = "Remap";
         bc.category = "geometric";
         bc.feature_set = "vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+        bc.setup_fn = [remap_pattern](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
             bufs.input = gen.makeU8(w, h);
             bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_8UC1);
-            gen.makeRemap(w, h, w, h, bufs.input_extra, bufs.output_extra);
+            gen.makeRemap(w, h, w, h, bufs.input_extra, bufs.output_extra, remap_pattern);
             return true;
         };
         bc.run_fn = [](CaseBuffers& bufs) {
@@ -304,16 +310,17 @@ std::vector<OpenCVBenchmarkCase> registerCvGeometricBenchmarks() {
         cases.push_back(bc);
     }
 
-    // Remap_Nearest — INTER_NEAREST
+    // Remap_Nearest — INTER_NEAREST. Uses the same coordinate pattern
+    // as Remap so both variants exercise realistic memory access.
     {
         OpenCVBenchmarkCase bc;
         bc.name = "Remap_Nearest";
         bc.category = "geometric";
         bc.feature_set = "vision";
-        bc.setup_fn = [](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
+        bc.setup_fn = [remap_pattern](uint32_t w, uint32_t h, OpenCVTestData& gen, CaseBuffers& bufs) -> bool {
             bufs.input = gen.makeU8(w, h);
             bufs.output.create(static_cast<int>(h), static_cast<int>(w), CV_8UC1);
-            gen.makeRemap(w, h, w, h, bufs.input_extra, bufs.output_extra);
+            gen.makeRemap(w, h, w, h, bufs.input_extra, bufs.output_extra, remap_pattern);
             return true;
         };
         bc.run_fn = [](CaseBuffers& bufs) {

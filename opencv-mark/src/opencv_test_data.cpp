@@ -4,9 +4,9 @@
 
 namespace opencv_mark {
 
-OpenCVTestData::OpenCVTestData(uint64_t seed) : rng_(seed) {}
+OpenCVTestData::OpenCVTestData(uint64_t seed) : rng_(seed), seed_(seed) {}
 
-void OpenCVTestData::reseed(uint64_t seed) { rng_.seed(seed); }
+void OpenCVTestData::reseed(uint64_t seed) { rng_.seed(seed); seed_ = seed; }
 
 cv::Mat OpenCVTestData::makeU8(uint32_t width, uint32_t height) {
     cv::Mat m(static_cast<int>(height), static_cast<int>(width), CV_8UC1);
@@ -64,12 +64,9 @@ cv::Mat OpenCVTestData::makePerspectiveMatrix() {
     return m;
 }
 
-void OpenCVTestData::makeRemap(uint32_t src_w, uint32_t src_h,
-                               uint32_t dst_w, uint32_t dst_h,
-                               cv::Mat& mapX, cv::Mat& mapY) {
-    // Identity map with a tiny per-pixel offset so the kernel does
-    // real bilinear sampling instead of degenerate copy. Mirrors
-    // openvx-mark's TestDataGenerator::createRemap behaviour.
+void OpenCVTestData::makeRemapIdentity(uint32_t src_w, uint32_t src_h,
+                                       uint32_t dst_w, uint32_t dst_h,
+                                       cv::Mat& mapX, cv::Mat& mapY) {
     mapX.create(static_cast<int>(dst_h), static_cast<int>(dst_w), CV_32FC1);
     mapY.create(static_cast<int>(dst_h), static_cast<int>(dst_w), CV_32FC1);
     const float sx = static_cast<float>(src_w) / static_cast<float>(dst_w);
@@ -78,8 +75,84 @@ void OpenCVTestData::makeRemap(uint32_t src_w, uint32_t src_h,
         auto* mx = mapX.ptr<float>(y);
         auto* my = mapY.ptr<float>(y);
         for (int x = 0; x < mapX.cols; ++x) {
-            mx[x] = (x + 0.5f) * sx + 0.25f;
-            my[x] = (y + 0.5f) * sy + 0.25f;
+            mx[x] = (x + 0.5f) * sx - 0.5f;
+            my[x] = (y + 0.5f) * sy - 0.5f;
+        }
+    }
+}
+
+void OpenCVTestData::makeRemap(uint32_t src_w, uint32_t src_h,
+                               uint32_t dst_w, uint32_t dst_h,
+                               cv::Mat& mapX, cv::Mat& mapY,
+                               RemapPattern pattern) {
+    // Build the requested pattern. By default use a radial lens-distortion
+    // model so the benchmark exercises scattered, realistic memory access
+    // rather than the cache-friendly identity path.
+    if (pattern == RemapPattern::IDENTITY) {
+        makeRemapIdentity(src_w, src_h, dst_w, dst_h, mapX, mapY);
+        return;
+    }
+
+    mapX.create(static_cast<int>(dst_h), static_cast<int>(dst_w), CV_32FC1);
+    mapY.create(static_cast<int>(dst_h), static_cast<int>(dst_w), CV_32FC1);
+    const float sx = static_cast<float>(src_w) / static_cast<float>(dst_w);
+    const float sy = static_cast<float>(src_h) / static_cast<float>(dst_h);
+    const float dst_wf = static_cast<float>(dst_w);
+    const float dst_hf = static_cast<float>(dst_h);
+
+    if (pattern == RemapPattern::LENS_DISTORTION) {
+        const float cx = dst_wf * 0.5f;
+        const float cy = dst_hf * 0.5f;
+        const float max_radius = 0.5f * std::sqrt(dst_wf * dst_wf + dst_hf * dst_hf);
+        const float inv_max_r2 = 1.0f / (max_radius * max_radius + 1e-6f);
+        const float k1 = 0.08f;
+        const float k2 = 0.01f;
+        for (int y = 0; y < mapX.rows; ++y) {
+            auto* mx = mapX.ptr<float>(y);
+            auto* my = mapY.ptr<float>(y);
+            for (int x = 0; x < mapX.cols; ++x) {
+                const float xf = static_cast<float>(x);
+                const float yf = static_cast<float>(y);
+                const float dx = xf - cx;
+                const float dy = yf - cy;
+                const float r2 = (dx * dx + dy * dy) * inv_max_r2;
+                const float r4 = r2 * r2;
+                const float scale = 1.0f + k1 * r2 + k2 * r4;
+                const float src_x = ((xf * sx) - cx) * scale + cx;
+                const float src_y = ((yf * sy) - cy) * scale + cy;
+                // cv::remap expects subpixel coordinates; (x+0.5)*scale-0.5
+                // is the standard convention, but here src_x/src_y already
+                // represent destination-to-source mapping coordinates and
+                // are used directly to match openvx-mark's convention.
+                mx[x] = src_x;
+                my[x] = src_y;
+            }
+        }
+    } else { // RANDOM_OFFSETS
+        // Seed a dedicated, deterministic RNG for this pattern so offsets are
+        // reproducible regardless of how many other benchmarks ran before
+        // this one. Mix the original global seed with dimensions and a
+        // pattern tag so the map is stable across run order.
+        const uint64_t seed = seed_ + static_cast<uint64_t>(src_w) * 73856093u +
+                              static_cast<uint64_t>(src_h) * 19349663u +
+                              static_cast<uint64_t>(dst_w) * 83492791u +
+                              static_cast<uint64_t>(dst_h) * 4256233u +
+                              0x9e3779b97f4a7c15ULL;
+        std::mt19937_64 pattern_rng(seed);
+        std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
+        const float src_wf = static_cast<float>(src_w);
+        const float src_hf = static_cast<float>(src_h);
+        for (int y = 0; y < mapX.rows; ++y) {
+            auto* mx = mapX.ptr<float>(y);
+            auto* my = mapY.ptr<float>(y);
+            for (int x = 0; x < mapX.cols; ++x) {
+                float rx = (x + 0.5f) * sx - 0.5f + dist(pattern_rng);
+                float ry = (y + 0.5f) * sy - 0.5f + dist(pattern_rng);
+                // Clamp to valid source bounds so border handling stays
+                // consistent across implementations and runs.
+                mx[x] = std::max(-0.5f, std::min(rx, src_wf - 0.5f));
+                my[x] = std::max(-0.5f, std::min(ry, src_hf - 0.5f));
+            }
         }
     }
 }

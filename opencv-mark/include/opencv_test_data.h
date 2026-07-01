@@ -11,8 +11,25 @@
 #include <cstdint>
 #include <opencv2/core.hpp>
 #include <random>
+#include <string>
 
 namespace opencv_mark {
+
+// Coordinate generation patterns for cv::remap. Keep in sync with
+// openvx-mark's benchmark::RemapPattern.
+enum class RemapPattern {
+    IDENTITY,        // (x,y) -> (x,y): sequential, not representative
+    LENS_DISTORTION, // radial distortion model (default for benchmarks)
+    RANDOM_OFFSETS   // small random jitter around each pixel
+};
+
+// Parse a user-supplied remap pattern string. Returns LENS_DISTORTION for
+// unknown values so benchmarks always run with a realistic default.
+inline RemapPattern remapPatternFromString(const std::string& s) {
+    if (s == "identity") return RemapPattern::IDENTITY;
+    if (s == "random_offsets") return RemapPattern::RANDOM_OFFSETS;
+    return RemapPattern::LENS_DISTORTION;
+}
 
 class OpenCVTestData {
 public:
@@ -42,11 +59,18 @@ public:
     cv::Mat makePerspectiveMatrix();
 
     // Two CV_32FC1 maps (mapX, mapY) for cv::remap, sized
-    // (dst_w, dst_h), each pixel mapped to a slightly displaced source
-    // location so the kernel does real bilinear sampling work.
+    // (dst_w, dst_h). Default pattern is LENS_DISTORTION so the
+    // benchmark exercises scattered, realistic memory access; pass
+    // IDENTITY to reproduce the old cache-friendly behaviour.
     void makeRemap(uint32_t src_w, uint32_t src_h,
                    uint32_t dst_w, uint32_t dst_h,
-                   cv::Mat& mapX, cv::Mat& mapY);
+                   cv::Mat& mapX, cv::Mat& mapY,
+                   RemapPattern pattern = RemapPattern::LENS_DISTORTION);
+
+    // Identity remap maps for deterministic correctness checks.
+    static void makeRemapIdentity(uint32_t src_w, uint32_t src_h,
+                                  uint32_t dst_w, uint32_t dst_h,
+                                  cv::Mat& mapX, cv::Mat& mapY);
 
     // 3x3 CV_16SC1 convolution kernel for cv::filter2D — same
     // signed-int weights openvx-mark uses for its CustomConvolution
@@ -60,6 +84,7 @@ public:
 
 private:
     std::mt19937_64 rng_;
+    uint64_t seed_;
 };
 
 } // namespace opencv_mark

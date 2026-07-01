@@ -33,8 +33,9 @@
 #include <cmath>
 #include <vector>
 
-std::vector<BenchmarkCase> registerGeometricBenchmarks() {
+std::vector<BenchmarkCase> registerGeometricBenchmarks(const BenchmarkConfig& config) {
     std::vector<BenchmarkCase> cases;
+    const benchmark::RemapPattern remap_pattern = benchmark::remapPatternFromString(config.remap_pattern);
 
     // ScaleImage_Half: scale down by 2x using bilinear interpolation
     //
@@ -382,6 +383,11 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
     //
     // Vision Conformance Feature Set: Remap requires both
     // VX_INTERPOLATION_NEAREST_NEIGHBOR and VX_INTERPOLATION_BILINEAR.
+    //
+    // The remap coordinates default to a radial lens-distortion model
+    // (LENS_DISTORTION) so the benchmark exercises scattered, realistic
+    // memory access rather than the cache-friendly identity pattern.
+    // Use --remap-pattern identity to restore the old behaviour.
     {
         BenchmarkCase bc;
         bc.name = "Remap";
@@ -389,7 +395,7 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         bc.feature_set = "vision";
         bc.kernel_enum = VX_KERNEL_REMAP;
         bc.required_kernels = {VX_KERNEL_REMAP};
-        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+        bc.graph_setup = [remap_pattern](vx_context ctx, vx_graph graph,
                             uint32_t width, uint32_t height,
                             TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
             vx_image input = gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8);
@@ -398,7 +404,7 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
             vx_image output = vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8);
             tracker.trackImage(output);
 
-            vx_remap remap_table = gen.createRemap(ctx, width, height, width, height);
+            vx_remap remap_table = gen.createRemap(ctx, width, height, width, height, remap_pattern);
             tracker.trackRemap(remap_table);
 
             vx_node node = vxRemapNode(graph, input, remap_table, VX_INTERPOLATION_BILINEAR, output);
@@ -412,23 +418,8 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
             if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
-            vx_remap remap = vxCreateRemap(ctx, 64, 64, 64, 64);
-#if OPENVX_USE_SET_REMAP_POINT
-            for (vx_uint32 y = 0; y < 64; y++)
-                for (vx_uint32 x = 0; x < 64; x++)
-                    vxSetRemapPoint(remap, x, y, (vx_float32)x, (vx_float32)y);
-#else
-            vx_rectangle_t rect = {0, 0, 64, 64};
-            vx_size stride = 64 * sizeof(vx_coordinates2df_t);
-            std::vector<vx_coordinates2df_t> coords(64 * 64);
-            for (vx_uint32 y = 0; y < 64; y++)
-                for (vx_uint32 x = 0; x < 64; x++) {
-                    coords[y * 64 + x].x = (vx_float32)x;
-                    coords[y * 64 + x].y = (vx_float32)y;
-                }
-            vxCopyRemapPatch(remap, &rect, stride, coords.data(),
-                             VX_TYPE_COORDINATES2DF, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-#endif
+            TestDataGenerator gen(42);
+            vx_remap remap = gen.createRemapIdentity(ctx, 64, 64, 64, 64);
             vx_status status = vxuRemap(ctx, in, remap, VX_INTERPOLATION_BILINEAR, out);
             if (status != VX_SUCCESS) {
                 vxReleaseRemap(&remap);
@@ -444,7 +435,10 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         cases.push_back(bc);
     }
 
-    // Remap_Nearest: identity remap using nearest-neighbor interpolation
+    // Remap_Nearest: nearest-neighbor interpolation using the same
+    // coordinate pattern as Remap so both variants exercise realistic
+    // memory access. Correctness verification below still uses a stable
+    // identity remap.
     {
         BenchmarkCase bc;
         bc.name = "Remap_Nearest";
@@ -452,12 +446,12 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
         bc.feature_set = "vision";
         bc.kernel_enum = VX_KERNEL_REMAP;
         bc.required_kernels = {VX_KERNEL_REMAP};
-        bc.graph_setup = [](vx_context ctx, vx_graph graph,
+        bc.graph_setup = [remap_pattern](vx_context ctx, vx_graph graph,
                             uint32_t width, uint32_t height,
                             TestDataGenerator& gen, ResourceTracker& tracker) -> bool {
             vx_image input = tracker.trackImage(gen.createFilledImage(ctx, width, height, VX_DF_IMAGE_U8));
             vx_image output = tracker.trackImage(vxCreateImage(ctx, width, height, VX_DF_IMAGE_U8));
-            vx_remap remap_table = tracker.trackRemap(gen.createRemap(ctx, width, height, width, height));
+            vx_remap remap_table = tracker.trackRemap(gen.createRemap(ctx, width, height, width, height, remap_pattern));
             vx_node node = vxRemapNode(graph, input, remap_table, VX_INTERPOLATION_NEAREST_NEIGHBOR, output);
             if (vxGetStatus((vx_reference)node) != VX_SUCCESS) return false;
             tracker.trackNode(node);
@@ -469,23 +463,8 @@ std::vector<BenchmarkCase> registerGeometricBenchmarks() {
             vx_image in = verify::createImage(ctx, 64, 64, VX_DF_IMAGE_U8, a.data());
             if (!in) return true;
             vx_image out = vxCreateImage(ctx, 64, 64, VX_DF_IMAGE_U8);
-            vx_remap remap = vxCreateRemap(ctx, 64, 64, 64, 64);
-#if OPENVX_USE_SET_REMAP_POINT
-            for (vx_uint32 y = 0; y < 64; y++)
-                for (vx_uint32 x = 0; x < 64; x++)
-                    vxSetRemapPoint(remap, x, y, (vx_float32)x, (vx_float32)y);
-#else
-            vx_rectangle_t rect = {0, 0, 64, 64};
-            vx_size stride = 64 * sizeof(vx_coordinates2df_t);
-            std::vector<vx_coordinates2df_t> coords(64 * 64);
-            for (vx_uint32 y = 0; y < 64; y++)
-                for (vx_uint32 x = 0; x < 64; x++) {
-                    coords[y * 64 + x].x = (vx_float32)x;
-                    coords[y * 64 + x].y = (vx_float32)y;
-                }
-            vxCopyRemapPatch(remap, &rect, stride, coords.data(),
-                             VX_TYPE_COORDINATES2DF, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
-#endif
+            TestDataGenerator gen(42);
+            vx_remap remap = gen.createRemapIdentity(ctx, 64, 64, 64, 64);
             vx_status status = vxuRemap(ctx, in, remap, VX_INTERPOLATION_NEAREST_NEIGHBOR, out);
             if (status != VX_SUCCESS) {
                 vxReleaseRemap(&remap);
