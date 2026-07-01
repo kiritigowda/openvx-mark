@@ -54,6 +54,8 @@ static void printUsage(const char* prog) {
     printf("  --max-retries N               Max retries for unstable benchmarks (default: 1)\n");
     printf("  --no-outlier-removal          Use raw samples for headline mean/median/stddev/CV\n");
     printf("  --include-unstable-in-scores  Include high-CV results in composite scores\n");
+    printf("  --remap-pattern PATTERN       Remap coordinate pattern: identity,\n");
+    printf("                                lens_distortion (default), random_offsets\n");
     printf("  --framework-chain-depths N,N  Chain depths for verify_chain (default: 1,4,16,64)\n\n");
 
     printf("Output:\n");
@@ -193,6 +195,15 @@ static bool parseArgs(int argc, char* argv[], BenchmarkConfig& config) {
             config.remove_outliers = false;
         } else if (arg == "--include-unstable-in-scores") {
             config.exclude_unstable_from_scores = false;
+        } else if (arg == "--remap-pattern" && i + 1 < argc) {
+            config.remap_pattern = argv[++i];
+            if (config.remap_pattern != "identity" &&
+                config.remap_pattern != "lens_distortion" &&
+                config.remap_pattern != "random_offsets") {
+                printf("WARNING: unknown remap pattern '%s', using lens_distortion\n",
+                       config.remap_pattern.c_str());
+                config.remap_pattern = "lens_distortion";
+            }
         } else if (arg == "--framework-chain-depths" && i + 1 < argc) {
             auto depth_strs = splitComma(argv[++i]);
             config.framework_chain_depths.clear();
@@ -365,7 +376,7 @@ int main(int argc, char* argv[]) {
     runner.addCases(registerPixelwiseBenchmarks());
     runner.addCases(registerFilterBenchmarks());
     runner.addCases(registerColorBenchmarks());
-    runner.addCases(registerGeometricBenchmarks());
+    runner.addCases(registerGeometricBenchmarks(config));
     runner.addCases(registerStatisticalBenchmarks());
     runner.addCases(registerMultiscaleBenchmarks());
     runner.addCases(registerFeatureBenchmarks());

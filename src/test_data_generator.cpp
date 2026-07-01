@@ -5,10 +5,17 @@
 #include <vector>
 #include <cmath>
 
-TestDataGenerator::TestDataGenerator(uint64_t seed) : rng_(seed) {}
+static void computeRemapPoint(float x, float y, float src_wf, float src_hf,
+                              float dst_wf, float dst_hf,
+                              benchmark::RemapPattern pattern,
+                              uint64_t seed,
+                              vx_float32& out_x, vx_float32& out_y);
+
+TestDataGenerator::TestDataGenerator(uint64_t seed) : rng_(seed), seed_(seed) {}
 
 void TestDataGenerator::reseed(uint64_t seed) {
     rng_.seed(seed);
+    seed_ = seed;
 }
 
 vx_image TestDataGenerator::createFilledImage(vx_context ctx, uint32_t width, uint32_t height,
@@ -168,8 +175,8 @@ vx_matrix TestDataGenerator::createPerspectiveMatrix(vx_context ctx) {
     return mat;
 }
 
-vx_remap TestDataGenerator::createRemap(vx_context ctx, uint32_t src_w, uint32_t src_h,
-                                        uint32_t dst_w, uint32_t dst_h) {
+vx_remap TestDataGenerator::createRemapIdentity(vx_context ctx, uint32_t src_w, uint32_t src_h,
+                                                  uint32_t dst_w, uint32_t dst_h) {
     vx_remap remap = vxCreateRemap(ctx, src_w, src_h, dst_w, dst_h);
 
 #if OPENVX_USE_SET_REMAP_POINT
@@ -196,6 +203,114 @@ vx_remap TestDataGenerator::createRemap(vx_context ctx, uint32_t src_w, uint32_t
     }
 #endif
     return remap;
+}
+
+vx_remap TestDataGenerator::createRemap(vx_context ctx, uint32_t src_w, uint32_t src_h,
+                                        uint32_t dst_w, uint32_t dst_h,
+                                        benchmark::RemapPattern pattern) {
+    // Identity is the only pattern that can be implemented without rng,
+    // so delegate to the deterministic helper.
+    if (pattern == benchmark::RemapPattern::IDENTITY) {
+        return createRemapIdentity(ctx, src_w, src_h, dst_w, dst_h);
+    }
+
+    vx_remap remap = vxCreateRemap(ctx, src_w, src_h, dst_w, dst_h);
+
+    // Deterministic seed for RANDOM_OFFSETS. Mixes the original global seed,
+    // source and destination dimensions, and a pattern-specific constant so
+    // the coordinate map is reproducible regardless of benchmark order.
+    // LENS_DISTORTION is deterministic and does not consume rng.
+    const uint64_t seed = seed_ + static_cast<uint64_t>(src_w) * 73856093u +
+                          static_cast<uint64_t>(src_h) * 19349663u +
+                          static_cast<uint64_t>(dst_w) * 83492791u +
+                          static_cast<uint64_t>(dst_h) * 4256233u +
+                          0x9e3779b97f4a7c15ULL;
+
+#if OPENVX_USE_SET_REMAP_POINT
+    for (vx_uint32 y = 0; y < dst_h; y++) {
+        for (vx_uint32 x = 0; x < dst_w; x++) {
+            vx_float32 sx, sy;
+            computeRemapPoint(static_cast<float>(x), static_cast<float>(y),
+                              static_cast<float>(src_w), static_cast<float>(src_h),
+                              static_cast<float>(dst_w), static_cast<float>(dst_h),
+                              pattern, seed, sx, sy);
+            vxSetRemapPoint(remap, x, y, sx, sy);
+        }
+    }
+#else
+    {
+        vx_rectangle_t rect = {0, 0, dst_w, dst_h};
+        vx_size stride = dst_w * sizeof(vx_coordinates2df_t);
+        std::vector<vx_coordinates2df_t> coords(dst_w * dst_h);
+        for (vx_uint32 y = 0; y < dst_h; y++) {
+            for (vx_uint32 x = 0; x < dst_w; x++) {
+                vx_float32 sx, sy;
+                computeRemapPoint(static_cast<float>(x), static_cast<float>(y),
+                                  static_cast<float>(src_w), static_cast<float>(src_h),
+                                  static_cast<float>(dst_w), static_cast<float>(dst_h),
+                                  pattern, seed, sx, sy);
+                coords[y * dst_w + x].x = sx;
+                coords[y * dst_w + x].y = sy;
+            }
+        }
+        vxCopyRemapPatch(remap, &rect, stride, coords.data(),
+                         VX_TYPE_COORDINATES2DF, VX_WRITE_ONLY, VX_MEMORY_TYPE_HOST);
+    }
+#endif
+    return remap;
+}
+
+static void computeRemapPoint(float x, float y, float src_wf, float src_hf,
+                              float dst_wf, float dst_hf,
+                              benchmark::RemapPattern pattern,
+                              uint64_t seed,
+                              vx_float32& out_x, vx_float32& out_y) {
+    switch (pattern) {
+        case benchmark::RemapPattern::LENS_DISTORTION: {
+            // Radial distortion model centered in the destination image.
+            // Maps destination coordinates back to source coordinates with
+            // a small barrel distortion so memory access is scattered but
+            // still deterministic and physically plausible.
+            const float cx = dst_wf * 0.5f;
+            const float cy = dst_hf * 0.5f;
+            const float dx = x - cx;
+            const float dy = y - cy;
+            // Normalise radius relative to image diagonal.
+            const float max_radius = 0.5f * std::sqrt(dst_wf * dst_wf + dst_hf * dst_hf);
+            const float r2 = (dx * dx + dy * dy) / (max_radius * max_radius + 1e-6f);
+            const float r4 = r2 * r2;
+            // Mild barrel coefficients. Positive k1 pulls pixels toward the
+            // center; this matches typical wide-angle lens distortion.
+            const float k1 = 0.08f;
+            const float k2 = 0.01f;
+            const float scale = 1.0f + k1 * r2 + k2 * r4;
+            // Convert from destination-normalised to source coordinates.
+            out_x = ((x * src_wf) / dst_wf - cx) * scale + cx;
+            out_y = ((y * src_hf) / dst_hf - cy) * scale + cy;
+            break;
+        }
+        case benchmark::RemapPattern::RANDOM_OFFSETS: {
+            // Small per-pixel random jitter in [-2, +2] pixels. This keeps
+            // sampling local (no large holes) while breaking any identity
+            // fast-path an implementation may have. A dedicated RNG seeded
+            // from the caller-supplied value makes the pattern stable
+            // regardless of how many benchmarks ran before this one.
+            std::mt19937_64 pattern_rng(seed);
+            std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
+            float rx = (x * src_wf) / dst_wf + dist(pattern_rng);
+            float ry = (y * src_hf) / dst_hf + dist(pattern_rng);
+            // Clamp to valid source bounds so border handling does not vary
+            // across implementations and the pattern stays reproducible.
+            out_x = std::max(0.0f, std::min(rx, src_wf - 1.0f));
+            out_y = std::max(0.0f, std::min(ry, src_hf - 1.0f));
+            break;
+        }
+        default:
+            // Fallback to identity for unknown patterns.
+            out_x = (x * src_wf) / dst_wf;
+            out_y = (y * src_hf) / dst_hf;
+            break;
+    }
 }
 
 vx_convolution TestDataGenerator::createConvolution3x3(vx_context ctx) {

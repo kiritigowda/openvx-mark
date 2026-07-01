@@ -96,6 +96,13 @@ struct BenchmarkConfig {
     // perf" numbers but no longer a fair per-kernel cross-impl compare).
     int threads = 1;
 
+    // Remap coordinate generation pattern. The default is a radial
+    // lens-distortion model because an identity remap is unrepresentative
+    // of real-world fisheye/undistort workloads and may trigger impl-specific
+    // fast paths. Use "identity" only when you explicitly want the old
+    // cache-friendly behaviour.
+    std::string remap_pattern = "lens_distortion";  // identity | lens_distortion | random_offsets
+
     // Timer self-test — runs the validation harness instead of any
     // benchmark. Exit code reflects PASS/FAIL of the timer audit.
     bool validate_timing = false;

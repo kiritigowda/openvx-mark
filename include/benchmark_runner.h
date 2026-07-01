@@ -80,7 +80,7 @@ private:
 std::vector<BenchmarkCase> registerPixelwiseBenchmarks();
 std::vector<BenchmarkCase> registerFilterBenchmarks();
 std::vector<BenchmarkCase> registerColorBenchmarks();
-std::vector<BenchmarkCase> registerGeometricBenchmarks();
+std::vector<BenchmarkCase> registerGeometricBenchmarks(const BenchmarkConfig& config);
 std::vector<BenchmarkCase> registerStatisticalBenchmarks();
 std::vector<BenchmarkCase> registerMultiscaleBenchmarks();
 std::vector<BenchmarkCase> registerFeatureBenchmarks();
